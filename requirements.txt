@@ -1,2 +1,3 @@
 apache-airflow[postgres,slack,celery]==3.3.2
 pytest
+pytest-cov

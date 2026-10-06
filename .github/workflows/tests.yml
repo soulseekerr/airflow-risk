@@ -25,4 +25,8 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest -v
+          python -m pytest \
+            --cov=risk_pipeline \
+            --cov-report=term-missing \
+            --cov-fail-under=90 \
+            -v

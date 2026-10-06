@@ -22,3 +22,7 @@ simple_auth_manager_passwords.json.generated
 
 # OS
 .DS_Store
+
+.coverage
+.coverage.*
+htmlcov/
