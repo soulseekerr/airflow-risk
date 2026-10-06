@@ -1,5 +1,6 @@
 # airflow-risk
 
+```
 airflow-risk-demo/
 │
 ├── dags/
@@ -15,6 +16,10 @@ airflow-risk-demo/
 ├── requirements.txt
 ├── .gitignore
 └── README.md
+```
+
+---
+## Start Project
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -33,6 +38,9 @@ pip install \
   "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
 pip -e install .
+
+---
+## Check airflow setup
 
 export AIRFLOW__CORE__DAGS_FOLDER="$HOME/Projects/GitHub/airflow-risk-trunk/airflow-risk/dags"
 
@@ -59,8 +67,10 @@ cat "$AIRFLOW_HOME/simple_auth_manager_passwords.json.generated"
 
 export AIRFLOW__CORE__TEST_CONNECTION=Enabled
 airflow connections test risk_postgres
-# stop the currently running standalone Airflow
-# then restart
+stop the currently running standalone Airflow then restart
+
+---
+## Tests
 
 python -m pytest -v -s
 pytest tests/test_risk_calculations.py -v
