@@ -19,6 +19,8 @@ def test_xcom_demo_dag_exists():
         dag_folder=str(DAGS_FOLDER),
     )
 
-    dag = dag_bag.get_dag("xcom_demo")
+    # dag = dag_bag.dags.get("xcom_demo")
 
-    assert dag is not None
+    # assert dag is not None
+
+    assert "xcom_demo" in dag_bag.dag_ids
