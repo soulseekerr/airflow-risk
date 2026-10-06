@@ -75,3 +75,8 @@ stop the currently running standalone Airflow then restart
 python -m pytest -v -s
 pytest tests/test_risk_calculations.py -v
 pytest tests/test_risk_calculations.py::test_large_trade_threshold -v
+
+python -m pytest \
+  --cov=risk_pipeline \
+  --cov-report=term-missing \
+  -v
