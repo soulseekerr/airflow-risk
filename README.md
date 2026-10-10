@@ -1,5 +1,8 @@
 # airflow-risk
 
+See [README_PROJECT.md](README_PROJECT.md) for the original demo overview and
+[README_XVA.md](README_XVA.md) for the new PV, positive exposure, and CVA batch.
+
 ```
 airflow-risk-demo/
 │

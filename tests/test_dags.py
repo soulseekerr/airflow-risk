@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from airflow.dag_processing.dagbag import DagBag
+from airflow.timetables.interval import CronDataIntervalTimetable
 
 
 DAGS_FOLDER = Path(__file__).resolve().parents[1] / "dags"
@@ -24,3 +25,29 @@ def test_xcom_demo_dag_exists():
     # assert dag is not None
 
     assert "xcom_demo" in dag_bag.dag_ids
+
+
+def test_xva_dag_chain_and_dependencies():
+    dag_bag = DagBag(dag_folder=str(DAGS_FOLDER))
+    assert "xva_daily_batch" not in dag_bag.dag_ids
+    inputs = dag_bag.dags["xva_inputs"]
+    calculations = dag_bag.dags["xva_calculations"]
+    reports = dag_bag.dags["xva_reports"]
+    assert isinstance(inputs.schedule, CronDataIntervalTimetable)
+    assert calculations.schedule is None and reports.schedule is None
+    assert set(inputs.task_ids) == {"validate_and_freeze", "trigger_calculations"}
+    assert set(calculations.task_ids) == {"validate_batch", "generate_market_scenarios",
+                                          "calculate_pv_exposure_cva", "reconcile_and_publish", "trigger_reports"}
+    assert set(reports.task_ids) == {"validate_published_batch", "create_reports"}
+    for dag, trigger_id, target, upstream in (
+        (inputs, "trigger_calculations", "xva_calculations", "validate_and_freeze"),
+        (calculations, "trigger_reports", "xva_reports", "reconcile_and_publish"),
+    ):
+        trigger = dag.get_task(trigger_id)
+        assert trigger.trigger_dag_id == target
+        assert trigger.upstream_task_ids == {upstream}
+        assert trigger.trigger_rule == "all_success"
+        assert trigger.skip_when_already_exists and trigger.fail_when_dag_is_paused
+        assert "postgres__" in trigger.trigger_run_id
+    assert calculations.get_task("calculate_pv_exposure_cva").upstream_task_ids == {"validate_batch", "generate_market_scenarios"}
+    assert reports.get_task("create_reports").upstream_task_ids == {"validate_published_batch"}
