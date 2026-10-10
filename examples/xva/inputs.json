@@ -1,0 +1,42 @@
+{
+  "valuation_date": "2026-10-10",
+  "reporting_currency": "GBP",
+  "market": {"flat_rate": 0.04, "rate_volatility": 0.01},
+  "simulation": {"paths": 200, "seed": 42, "exposure_frequency_days": 30},
+  "counterparties": [
+    {"name": "Demo Bank", "code": "0000001", "recovery_rate": 0.4, "credit_curve_id": "DEMO_BANK"},
+    {"name": "Demo Corporate", "code": "0000002", "recovery_rate": 0.4, "credit_curve_id": "DEMO_CORP"}
+  ],
+  "credit_curves": [
+    {"curve_id": "DEMO_BANK", "valuation_date": "2026-10-10", "points": [
+      {"date": "2027-10-10", "survival_probability": 0.98},
+      {"date": "2028-10-10", "survival_probability": 0.95}
+    ]},
+    {"curve_id": "DEMO_CORP", "valuation_date": "2026-10-10", "points": [
+      {"date": "2027-10-10", "survival_probability": 0.96},
+      {"date": "2028-10-10", "survival_probability": 0.91}
+    ]}
+  ],
+  "master_agreements": [
+    {"ma_id": "MA_BANK", "counterparty_code": "0000001"},
+    {"ma_id": "MA_CORP", "counterparty_code": "0000002"}
+  ],
+  "csas": [
+    {"csa_id": "CSA_BANK", "ma_id": "MA_BANK", "currency": "GBP",
+     "margin_frequency_days": 7, "settlement_lag_days": 2,
+     "post_collateral": true, "receive_collateral": true,
+     "posting_threshold": 10000, "receiving_threshold": 10000,
+     "minimum_transfer_amount": 1000, "initial_balance": 0}
+  ],
+  "trades": [
+    {"trade_id": "IRS001", "trade_type": "interest_rate_swap", "counterparty_code": "0000001",
+     "ma_id": "MA_BANK", "csa_id": "CSA_BANK", "currency": "GBP", "notional": 1000000,
+     "direction": "pay_fixed", "fixed_rate": 0.03, "start_date": "2026-10-01", "maturity_date": "2028-10-10"},
+    {"trade_id": "IRS002", "trade_type": "interest_rate_swap", "counterparty_code": "0000001",
+     "ma_id": "MA_BANK", "csa_id": "CSA_BANK", "currency": "GBP", "notional": 400000,
+     "direction": "receive_fixed", "fixed_rate": 0.035, "start_date": "2026-10-01", "maturity_date": "2028-10-10"},
+    {"trade_id": "IRS003", "trade_type": "interest_rate_swap", "counterparty_code": "0000002",
+     "ma_id": "MA_CORP", "csa_id": null, "currency": "GBP", "notional": 1000000,
+     "direction": "pay_fixed", "fixed_rate": 0.03, "start_date": "2026-10-01", "maturity_date": "2028-10-10"}
+  ]
+}

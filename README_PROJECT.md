@@ -104,9 +104,10 @@ python -m pytest -v
 python -m pytest --cov=risk_pipeline --cov-report=term-missing --cov-fail-under=90 -v
 ```
 
-The suite contains nine test cases, including the parametrized threshold cases.
-It validates the calculation function and DAG loading. It does not run the DAG
-end to end or verify PostgreSQL writes and task retries.
+The original demo has nine test cases, including parametrized threshold cases.
+They validate the calculation function and DAG loading without checking the
+demo's PostgreSQL writes or retries. The suite also includes tests for the
+three-DAG XVA workflow; see [README_XVA.md](README_XVA.md).
 
 To load this repository's DAG in a local Airflow instance:
 
