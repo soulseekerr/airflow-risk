@@ -7,17 +7,26 @@ from risk_pipeline.xva.batch import freeze_inputs, load_snapshot, read_json
 
 
 def prepare_inputs(configuration, repository, scheduled_date=None):
-    repository = Path(repository)
+    repository = Path(os.environ.get("XVA_PROJECT_ROOT", repository)).expanduser().resolve()
     if scheduled_date:
-        input_root = Path(os.environ.get("XVA_INPUT_ROOT", str(repository / "data/xva")))
+        input_root = Path(os.environ.get("XVA_INPUT_ROOT", str(repository / "data/xva"))).expanduser()
+        if not input_root.is_absolute():
+            input_root = repository / input_root
         default = input_root / f"{scheduled_date}.json"
     else:
         default = repository / "examples/xva/inputs.json"
-    input_path = configuration.get("input_path", str(default))
+    input_path = Path(configuration.get("input_path", str(default))).expanduser()
+    if not input_path.is_absolute():
+        input_path = repository / input_path
     # Check the date before writing artifacts or triggering another DAG.
     if scheduled_date and read_json(input_path)["valuation_date"] != scheduled_date:
         raise ValueError("Scheduled input valuation date must match the data interval start date")
-    snapshot_path = freeze_inputs(input_path, configuration.get("output_root", "/workspace/.xva-risk"))
+    airflow_home = Path(os.environ.get("AIRFLOW_HOME", str(Path.home() / "airflow"))).expanduser().resolve()
+    default_output = os.environ.get("XVA_OUTPUT_ROOT", str(airflow_home / "xva"))
+    output_root = Path(configuration.get("output_root", default_output)).expanduser()
+    if not output_root.is_absolute():
+        output_root = airflow_home / output_root
+    snapshot_path = freeze_inputs(input_path, output_root)
     snapshot = load_snapshot(snapshot_path)
     return {"batch_id": snapshot["batch_id"], "snapshot_path": snapshot_path}
 

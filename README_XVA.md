@@ -30,9 +30,10 @@ From the repository root, using the installed development environment:
 
 ```bash
 source .venv/bin/activate
+XVA_OUTPUT_ROOT="${XVA_OUTPUT_ROOT:-${AIRFLOW_HOME:-$HOME/airflow}/xva}"
 python -m risk_pipeline.xva.batch \
   --inputs examples/xva/inputs.json \
-  --output /workspace/.xva-risk
+  --output "$XVA_OUTPUT_ROOT"
 ```
 
 The command validates and freezes inputs, generates daily scenarios, calculates
@@ -43,7 +44,7 @@ using the `published.json` path for that batch:
 
 ```bash
 python -m risk_pipeline.xva.reports \
-  --publication /workspace/.xva-risk/<batch_id>/published.json
+  --publication "$XVA_OUTPUT_ROOT/<batch_id>/published.json"
 ```
 
 Replace `<batch_id>` with the ID printed by the batch command. Reporting reads
@@ -96,14 +97,25 @@ airflow dags unpause xva_reports
 Run the supplied example without enabling the daily input schedule:
 
 ```bash
-airflow dags test xva_inputs --conf \
-  '{"input_path":"/workspace/airflow-risk/examples/xva/inputs.json","output_root":"/workspace/.xva-risk"}'
+airflow dags test xva_inputs
 ```
 
 This executes the input DAG and triggers a real calculation run. The scheduler
 executes calculations and then reports. The input DAG's successful completion
 means the calculation run was requested; it does not wait for calculations or
 reports to finish. The calculation DAG likewise does not wait for reports.
+
+Artifacts default to `$AIRFLOW_HOME/xva`, or `~/airflow/xva` when `AIRFLOW_HOME`
+is unset. Set `XVA_OUTPUT_ROOT` in the Airflow task processes to use another
+writable directory. A run's `output_root` configuration overrides that setting.
+Relative output directories are resolved against Airflow home; `~` is expanded.
+Use the same shared artifact directory across all workers.
+
+The checkout is inferred from the DAG file location. If you copy the DAG files
+into a separate Airflow DAG directory, set `XVA_PROJECT_ROOT` to the checkout
+containing `examples/xva/inputs.json` and `data/xva`. Relative `input_path` and
+`XVA_INPUT_ROOT` paths are resolved against that checkout. For example, use
+`{"input_path":"examples/xva/inputs.json"}` as a manual run's configuration.
 
 For daily operation, supply files at `data/xva/YYYY-MM-DD.json` in the repository,
 or set `XVA_INPUT_ROOT` in the Airflow processes to another input directory.
@@ -134,7 +146,7 @@ To rerun calculations directly, pass `batch_id` and `snapshot_path` to
 
 ```bash
 airflow dags trigger xva_reports --conf \
-  '{"batch_id":"<batch_id>","publication_path":"/workspace/.xva-risk/<batch_id>/published.json"}'
+  '{"batch_id":"<batch_id>","publication_path":"/absolute/path/to/xva/<batch_id>/published.json"}'
 ```
 
 Input and calculation errors fail immediately; publication allows two retries

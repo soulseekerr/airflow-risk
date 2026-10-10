@@ -41,6 +41,53 @@ def test_input_handoff_and_manual_defaults(tmp_path):
         require_snapshot({**handoff, "batch_id": "other"})
 
 
+@pytest.mark.parametrize("selection", ["airflow_home", "user_home", "environment", "configuration", "relative_output"])
+def test_portable_output_paths(tmp_path, monkeypatch, selection):
+    monkeypatch.delenv("XVA_OUTPUT_ROOT", raising=False)
+    monkeypatch.delenv("XVA_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path / "airflow"))
+    configuration = {}
+    expected = tmp_path / "airflow/xva"
+    if selection == "user_home":
+        monkeypatch.delenv("AIRFLOW_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    elif selection == "environment":
+        expected = tmp_path / "shared-artifacts"
+        monkeypatch.setenv("XVA_OUTPUT_ROOT", str(expected))
+    elif selection == "configuration":
+        monkeypatch.setenv("XVA_OUTPUT_ROOT", str(tmp_path / "unused"))
+        expected = tmp_path / "run-artifacts"
+        configuration["output_root"] = str(expected)
+    elif selection == "relative_output":
+        expected = tmp_path / "airflow/relative-artifacts"
+        configuration["output_root"] = "relative-artifacts"
+    handoff = prepare_inputs(configuration, REPOSITORY)
+    assert Path(handoff["snapshot_path"]).parent.parent == expected
+    assert Path(handoff["snapshot_path"]).is_file()
+    assert require_snapshot(handoff) == handoff["snapshot_path"]
+
+
+def test_project_root_override_for_copied_dags(source, tmp_path, monkeypatch):
+    project = tmp_path / "checkout"
+    write_json(project / "examples/xva/inputs.json", read_json(source))
+    monkeypatch.setenv("XVA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path / "airflow"))
+    monkeypatch.delenv("XVA_OUTPUT_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    handoff = prepare_inputs({"input_path": "examples/xva/inputs.json"}, tmp_path / "copied-dag-bundle")
+    assert Path(handoff["snapshot_path"]).is_file()
+
+
+def test_relative_scheduled_input_root(source, tmp_path, monkeypatch):
+    write_json(tmp_path / "feed/2026-10-10.json", read_json(source))
+    monkeypatch.setenv("XVA_INPUT_ROOT", "feed")
+    monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path / "airflow"))
+    monkeypatch.delenv("XVA_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("XVA_OUTPUT_ROOT", raising=False)
+    handoff = prepare_inputs({}, tmp_path, "2026-10-10")
+    assert Path(handoff["snapshot_path"]).is_file()
+
+
 def test_scheduled_input_feed_and_date_validation(source, tmp_path, monkeypatch):
     root = tmp_path / "feed"
     inputs = read_json(source)
