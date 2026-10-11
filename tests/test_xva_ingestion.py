@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from risk_pipeline.xva.batch import read_json, write_json
+from risk_pipeline.xva.batch import build_snapshot, read_json, write_json
+from risk_pipeline.xva.feeds import assemble_set
 from risk_pipeline.xva.batch import run_batch, simulate, value_batch, publish
 from risk_pipeline.xva.ingestion import ingest_submissions, validate_ingestion
 from risk_pipeline.xva.postgres import transaction
@@ -26,10 +27,23 @@ def template():
 def rows(connection_id, ingestion_id):
     """Read persisted submission state in source order from the disposable database."""
     with transaction(connection_id, readonly=True) as cursor:
-        cursor.execute("""SELECT submission_id, status, raw_payload, validation_errors, batch_id,
-            validated_snapshot, selected_for_calculation, validated_at, snapshot_path
-            FROM airflow_xva.input_submissions WHERE ingestion_id=%s ORDER BY submission_index""", (ingestion_id,))
-        return cursor.fetchall()
+        cursor.execute("""SELECT submission_id,status,declared_valuation_date,batch_id,
+            selected_for_calculation,validated_at,snapshot_path
+            FROM airflow_xva.input_sets WHERE ingestion_id=%s ORDER BY submission_index""", (ingestion_id,))
+        sets = cursor.fetchall()
+        result = []
+        for submission_id, status, declared, batch_id, selected, validated_at, snapshot_path in sets:
+            payload, _, _ = assemble_set(cursor, submission_id, declared, raw=True)
+            cursor.execute("SELECT message FROM airflow_xva.input_validation_errors WHERE submission_id=%s ORDER BY error_id", (submission_id,))
+            errors = [row[0] for row in cursor.fetchall()]
+            cursor.execute("""SELECT COUNT(*) FROM airflow_xva.input_set_feeds s
+                JOIN airflow_xva.input_feed_submissions f USING(feed_id)
+                WHERE s.submission_id=%s AND f.parse_error IS NOT NULL""", (submission_id,))
+            if cursor.fetchone()[0]:
+                payload = None
+            snapshot = build_snapshot(assemble_set(cursor, submission_id, declared)[0]) if status == "accepted" else None
+            result.append((submission_id,status,payload,errors,batch_id,snapshot,selected,validated_at,snapshot_path))
+        return result
 
 
 def test_raw_inputs_commit_before_validation_and_calculation(template, tmp_path, pg_connection):
@@ -51,7 +65,8 @@ def test_raw_inputs_commit_before_validation_and_calculation(template, tmp_path,
     with transaction(pg_connection, readonly=True) as cursor:
         cursor.execute("SELECT to_regclass('airflow_xva.batches')")
         assert cursor.fetchone()[0] is None
-        cursor.execute("SELECT valuation_date, request_key FROM airflow_xva.input_submissions")
+        cursor.execute("""SELECT s.valuation_date,i.request_key FROM airflow_xva.input_sets s
+            JOIN airflow_xva.input_ingestions i USING(ingestion_id)""")
         date, request = cursor.fetchone()
         assert date.isoformat() == template["valuation_date"] and request == "run-before-validation"
 
@@ -104,7 +119,7 @@ def test_retries_reuse_immutable_inputs_and_restore_missing_artifact(template, t
     assert rows(pg_connection, handoff["ingestion_id"]) == before
     template["market"]["flat_rate"] += 0.01
     write_json(source, template)
-    with pytest.raises(ValueError, match="start a new input run"):
+    with pytest.raises(ValueError, match="new feed version"):
         ingest_inputs(configuration, REPOSITORY, request_key="retry-run", connection_id=pg_connection)
     assert rows(pg_connection, handoff["ingestion_id"]) == before
 
@@ -172,9 +187,9 @@ def test_malformed_file_is_ingested_before_rejection(tmp_path, pg_connection):
     with pytest.raises(ValueError, match="rejected"):
         validate_ingestion(handoff)
     with transaction(pg_connection, readonly=True) as cursor:
-        cursor.execute("SELECT raw_text, raw_payload, validation_errors FROM airflow_xva.input_submissions")
-        raw_text, raw_payload, errors = cursor.fetchone()
-        assert raw_text == source.read_text() and raw_payload is None and errors
+        cursor.execute("SELECT raw_document,parse_error FROM airflow_xva.input_feed_submissions WHERE feed_type='settings'")
+        raw_text, error = cursor.fetchone()
+        assert raw_text == source.read_text() and error
 
 
 def test_standalone_batch_preserves_rejected_input_history(tmp_path, pg_connection):
@@ -183,9 +198,12 @@ def test_standalone_batch_preserves_rejected_input_history(tmp_path, pg_connecti
     with pytest.raises(ValueError, match="rejected"):
         run_batch(source, tmp_path / "outputs", pg_connection)
     with transaction(pg_connection, readonly=True) as cursor:
-        cursor.execute("SELECT status, raw_payload, validation_errors FROM airflow_xva.input_submissions")
-        status, payload, errors = cursor.fetchone()
-        assert status == "rejected" and payload == {"valuation_date": "2026-10-10"} and errors
+        cursor.execute("SELECT status FROM airflow_xva.input_sets")
+        assert cursor.fetchone()[0] == "rejected"
+        cursor.execute("SELECT raw_row FROM airflow_xva.input_settings")
+        assert cursor.fetchone()[0] == {"valuation_date": "2026-10-10"}
+        cursor.execute("SELECT COUNT(*) FROM airflow_xva.input_validation_errors")
+        assert cursor.fetchone()[0] > 0
         cursor.execute("SELECT to_regclass('airflow_xva.batches')")
         assert cursor.fetchone()[0] is None
 
@@ -207,5 +225,5 @@ def test_generated_accepted_snapshot_runs_through_publication_and_reports(templa
     with transaction(pg_connection, readonly=True) as cursor:
         cursor.execute("SELECT batch_id FROM airflow_xva.batches WHERE is_current")
         assert cursor.fetchall() == [(frozen["batch_id"],)]
-        cursor.execute("SELECT COUNT(*) FROM airflow_xva.input_submissions WHERE status='rejected'")
+        cursor.execute("SELECT COUNT(*) FROM airflow_xva.input_sets WHERE status='rejected'")
         assert cursor.fetchone()[0] == 2

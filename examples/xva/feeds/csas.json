@@ -1,0 +1,18 @@
+{
+  "valuation_date": "2026-10-10",
+  "rows": [
+    {
+      "csa_id": "CSA_BANK",
+      "ma_id": "MA_BANK",
+      "currency": "EUR",
+      "margin_frequency_days": 7,
+      "settlement_lag_days": 2,
+      "post_collateral": true,
+      "receive_collateral": true,
+      "posting_threshold": 10000,
+      "receiving_threshold": 10000,
+      "minimum_transfer_amount": 1000,
+      "initial_balance": 0
+    }
+  ]
+}

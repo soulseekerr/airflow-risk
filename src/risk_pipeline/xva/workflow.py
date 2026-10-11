@@ -7,6 +7,7 @@ from pathlib import Path
 from risk_pipeline.xva.batch import freeze_inputs, load_snapshot, read_json
 from risk_pipeline.xva.generation import generate_submissions
 from risk_pipeline.xva.ingestion import ingest_submissions, parse_payload
+from risk_pipeline.xva.feeds import FIELDS, create_input_set, ingest_feed
 from risk_pipeline.xva.postgres import DEFAULT_CONNECTION_ID
 
 
@@ -42,10 +43,38 @@ def prepare_inputs(configuration, repository, scheduled_date=None):
 
 
 def ingest_inputs(configuration, repository, scheduled_date=None, request_key=None, connection_id=DEFAULT_CONNECTION_ID):
-    """Persist file or generated submissions and return only database references and artifact settings."""
+    """Bind independently sourced feeds, or split legacy/demo portfolios into normalized feed versions."""
     repository, input_path, output_root = input_locations(configuration, repository, scheduled_date)
     if configuration.get("ingestion_id"):
         handoff = {"ingestion_id": configuration["ingestion_id"], "connection_id": connection_id}
+    elif configuration.get("feeds") is not None or (not configuration.get("generate_demo") and "input_path" not in configuration
+                                                     and (not scheduled_date or not input_path.exists())):
+        specs = configuration.get("feeds")
+        if specs is None:
+            root = input_path.parent / scheduled_date if scheduled_date else repository / "examples/xva/feeds"
+            specs = {kind: str(root / f"{kind}.json") for kind in FIELDS}
+        valuation_date = scheduled_date or configuration.get("valuation_date")
+        if valuation_date is None and not scheduled_date and "feeds" not in configuration:
+            try:
+                valuation_date = parse_payload((root / "settings.json").read_text()).get("valuation_date")
+            except (ValueError, AttributeError):
+                valuation_date = None  # Persist malformed default feeds before rejecting them.
+        if valuation_date is None and "feeds" in configuration:
+            raise ValueError("An explicit feed set requires valuation_date")
+        feed_ids = {}
+        for kind, spec in specs.items():
+            if kind not in FIELDS:
+                raise ValueError(f"Unknown feed type: {kind}")
+            if isinstance(spec, dict) and spec.get("feed_id"):
+                feed_ids[kind] = spec["feed_id"]
+                continue
+            path = Path(spec["path"] if isinstance(spec, dict) else spec).expanduser()
+            if not path.is_absolute():
+                path = repository / path
+            source = spec.get("source", str(path.resolve())) if isinstance(spec, dict) else str(path.resolve())
+            feed_ids[kind] = ingest_feed(kind, path.read_text(), source, valuation_date, connection_id,
+                                         request_key=f"{request_key}:{kind}" if request_key else None)
+        handoff = create_input_set(feed_ids, valuation_date, connection_id, request_key=request_key)
     else:
         if configuration.get("generate_demo"):
             options = dict(configuration.get("generation", {}))
@@ -68,6 +97,18 @@ def ingest_inputs(configuration, repository, scheduled_date=None, request_key=No
             source = str(input_path.resolve())
         handoff = ingest_submissions(raw_texts, source, connection_id, request_key)
     return {**handoff, "output_root": str(output_root), "scheduled_date": scheduled_date}
+
+
+def ingest_one_feed(configuration, repository, request_key=None, connection_id=DEFAULT_CONNECTION_ID):
+    """Stage one independently arriving source without assembling or triggering a portfolio calculation."""
+    for field in ("feed_type", "input_path", "valuation_date"):
+        if not configuration.get(field):
+            raise ValueError(f"Feed ingestion requires {field}")
+    _, path, _ = input_locations(configuration, repository)
+    source = configuration.get("source", str(path.resolve()))
+    feed_id = ingest_feed(configuration["feed_type"], path.read_text(), source,
+                          configuration["valuation_date"], connection_id, request_key)
+    return {"feed_id": feed_id, "feed_type": configuration["feed_type"], "source": source}
 
 
 def require_snapshot(configuration):

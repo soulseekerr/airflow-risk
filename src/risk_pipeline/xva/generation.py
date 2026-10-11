@@ -77,10 +77,12 @@ def inject_fault(payload, fault):
 
 
 def main():
-    """Write a generated submission envelope for later database ingestion by xva_inputs."""
+    """Write a legacy envelope or independent generated feed files and per-set run configurations."""
     parser = argparse.ArgumentParser(description="Generate varied XVA portfolios with intentional invalid submissions")
     parser.add_argument("--template", default="examples/xva/inputs.json")
-    parser.add_argument("--output", required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--output")
+    target.add_argument("--feed-directory")
     parser.add_argument("--count", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--noise", type=float, default=0.1)
@@ -89,6 +91,21 @@ def main():
     args = parser.parse_args()
     payloads = generate_submissions(json.loads(Path(args.template).expanduser().read_text()), args.count,
                                    args.seed, args.noise, args.rejection_rate, args.valuation_date)
+    if args.feed_directory:
+        root = Path(args.feed_directory).expanduser().resolve()
+        for index, payload in enumerate(payloads):
+            directory = root / f"submission-{index:03d}"
+            directory.mkdir(parents=True, exist_ok=True)
+            feeds = {}
+            for kind in ("counterparties", "credit_curves", "master_agreements", "csas", "trades", "settings"):
+                data = ({field: payload[field] for field in ("valuation_date", "reporting_currency", "market", "simulation")}
+                        if kind == "settings" else {"valuation_date": payload["valuation_date"], "rows": payload[kind]})
+                path = directory / f"{kind}.json"
+                path.write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
+                feeds[kind] = str(path)
+            (directory / "run_config.json").write_text(json.dumps({"valuation_date": payload["valuation_date"], "feeds": feeds}, indent=2) + "\n")
+        print(str(root))
+        return
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({"submissions": payloads}, indent=2, allow_nan=False) + "\n")

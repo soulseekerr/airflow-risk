@@ -1,0 +1,13 @@
+{
+  "valuation_date": "2026-10-10",
+  "rows": [
+    {
+      "ma_id": "MA_BANK",
+      "counterparty_code": "0000001"
+    },
+    {
+      "ma_id": "MA_CORP",
+      "counterparty_code": "0000002"
+    }
+  ]
+}

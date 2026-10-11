@@ -1,0 +1,44 @@
+{
+  "valuation_date": "2026-10-10",
+  "rows": [
+    {
+      "trade_id": "IRS001",
+      "trade_type": "interest_rate_swap",
+      "counterparty_code": "0000001",
+      "ma_id": "MA_BANK",
+      "csa_id": "CSA_BANK",
+      "currency": "EUR",
+      "notional": 1000000,
+      "direction": "pay_fixed",
+      "fixed_rate": 0.03,
+      "start_date": "2026-10-01",
+      "maturity_date": "2028-10-10"
+    },
+    {
+      "trade_id": "IRS002",
+      "trade_type": "interest_rate_swap",
+      "counterparty_code": "0000001",
+      "ma_id": "MA_BANK",
+      "csa_id": "CSA_BANK",
+      "currency": "EUR",
+      "notional": 400000,
+      "direction": "receive_fixed",
+      "fixed_rate": 0.035,
+      "start_date": "2026-10-01",
+      "maturity_date": "2028-10-10"
+    },
+    {
+      "trade_id": "IRS003",
+      "trade_type": "interest_rate_swap",
+      "counterparty_code": "0000002",
+      "ma_id": "MA_CORP",
+      "csa_id": null,
+      "currency": "EUR",
+      "notional": 1000000,
+      "direction": "pay_fixed",
+      "fixed_rate": 0.03,
+      "start_date": "2026-10-01",
+      "maturity_date": "2028-10-10"
+    }
+  ]
+}

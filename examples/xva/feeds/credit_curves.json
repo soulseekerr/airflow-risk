@@ -1,0 +1,33 @@
+{
+  "valuation_date": "2026-10-10",
+  "rows": [
+    {
+      "curve_id": "DEMO_BANK",
+      "valuation_date": "2026-10-10",
+      "points": [
+        {
+          "date": "2027-10-10",
+          "survival_probability": 0.98
+        },
+        {
+          "date": "2028-10-10",
+          "survival_probability": 0.95
+        }
+      ]
+    },
+    {
+      "curve_id": "DEMO_CORP",
+      "valuation_date": "2026-10-10",
+      "points": [
+        {
+          "date": "2027-10-10",
+          "survival_probability": 0.96
+        },
+        {
+          "date": "2028-10-10",
+          "survival_probability": 0.91
+        }
+      ]
+    }
+  ]
+}

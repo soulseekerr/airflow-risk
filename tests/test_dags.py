@@ -81,3 +81,10 @@ def test_xva_dag_chain_and_dependencies():
         assert "postgres__" in trigger.trigger_run_id
     assert calculations.get_task("calculate_pv_exposure_cva").upstream_task_ids == {"validate_batch", "generate_market_scenarios"}
     assert reports.get_task("create_reports").upstream_task_ids == {"validate_published_batch"}
+
+
+def test_independent_feed_dag_is_triggered_only():
+    """Verify independent feed arrivals can be ingested without starting a calculation run."""
+    dag = DagBag(dag_folder=str(DAGS_FOLDER)).dags["xva_feed_ingestion"]
+    assert dag.schedule is None
+    assert set(dag.task_ids) == {"ingest_source"}

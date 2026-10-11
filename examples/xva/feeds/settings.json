@@ -1,0 +1,13 @@
+{
+  "valuation_date": "2026-10-10",
+  "reporting_currency": "EUR",
+  "market": {
+    "flat_rate": 0.04,
+    "rate_volatility": 0.01
+  },
+  "simulation": {
+    "paths": 200,
+    "seed": 42,
+    "exposure_frequency_days": 30
+  }
+}

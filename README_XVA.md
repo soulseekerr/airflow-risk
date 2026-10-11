@@ -59,11 +59,12 @@ For CLI execution outside an Airflow 3 task, make the connection available throu
 or a secrets backend accessible to that process. During DAG execution, Airflow
 resolves metadata-stored connections through its execution API.
 
-## Run the three-DAG chain
+## Run the calculation chain and independent feed ingestion
 
 | DAG | Schedule | Tasks |
 | --- | --- | --- |
-| `xva_inputs` | Daily, initially paused | Ingest raw inputs in PostgreSQL, validate/freeze, trigger calculations |
+| `xva_feed_ingestion` | Triggered only | Stage one independently arriving source/feed |
+| `xva_inputs` | Daily, initially paused | Bind explicit feed versions, validate/freeze, trigger calculations |
 | `xva_calculations` | Triggered only | Validate batch identity, simulate, calculate, publish, trigger reports |
 | `xva_reports` | Triggered only | Validate published batch, generate reports |
 
@@ -117,7 +118,8 @@ containing `examples/xva/inputs.json` and `data/xva`. Relative `input_path` and
 `XVA_INPUT_ROOT` paths are resolved against that checkout. For example, use
 `{"input_path":"examples/xva/inputs.json"}` as a manual run's configuration.
 
-For daily operation, supply files at `data/xva/YYYY-MM-DD.json` in the repository,
+For daily operation, supply each source at `data/xva/YYYY-MM-DD/<feed_type>.json`
+in the repository (legacy `data/xva/YYYY-MM-DD.json` files remain supported),
 or set `XVA_INPUT_ROOT` in the Airflow processes to another input directory.
 An explicit daily interval timetable in `Europe/London` is used. A run after
 midnight processes the preceding calendar day's valuation date (its interval
@@ -128,16 +130,18 @@ the input DAG and prevents the calculation trigger. Once the feed is ready:
 airflow dags unpause xva_inputs
 ```
 
-Manual input runs default to the sample file unless `input_path` is supplied.
+Manual input runs default to the six separate sample feeds in `examples/xva/feeds`.
+An explicit `input_path` still accepts a legacy combined portfolio file.
 In the Airflow UI, trigger **`xva_inputs`** to start a new batch. You can leave
-its configuration empty to use the sample, or supply `input_path` to your EUR
-input file. Do not start a new batch by triggering `xva_calculations` with an
+its configuration empty to use the sample feeds, or supply a valuation date and
+explicit `feeds` references as described below. Do not start a new batch by triggering `xva_calculations` with an
 empty configuration: its `validate_batch` task requires the frozen input
 identity and path supplied by `xva_inputs`.
 
 When the input schedule is enabled, `airflow dags trigger xva_inputs --conf ...`
-can also be used. Only `xva_inputs` has a schedule; calculations and reports
-use `schedule=None` and have `max_active_runs=1`.
+can also be used. Only `xva_inputs` has a schedule. Individual feed ingestion,
+calculations, and reports use `schedule=None`; calculations and reports each
+have `max_active_runs=1`.
 
 Triggers require successful upstream tasks and fail if the target DAG is paused.
 Their run IDs include a PostgreSQL prefix and the batch ID, so old SQLite runs
@@ -171,42 +175,114 @@ selected accepted portfolio. Calculation errors fail immediately; publication al
 for storage failures. The original `xva_daily_batch` DAG has been replaced by
 these three DAGs.
 
-## Database input intake and generated submissions
+## Independent input feeds and normalized storage
 
-The Airflow input DAG and standalone batch command now store submissions in
-`airflow_xva.input_submissions` through `risk_postgres` **before business validation**.
-The example file is a source/template, rather than the authoritative input store.
-Validation reads the database records; changing the original source file after
-ingestion does not change that ingestion's inputs.
+Each input type has its own feed, source, version ID, valuation date, and ingestion
+timestamp. Feed arrivals are independent of portfolio assembly. A calculation uses
+an **explicit set of feed IDs**; it never silently picks the latest source record.
+All chosen feeds must declare the input set's valuation date. Cross-feed allocations,
+curve coverage, and business rules are checked together before calculation.
 
-Each submission is a **complete portfolio**. A file can contain one portfolio or
-an envelope of alternatives: `{"submissions": [<portfolio>, <portfolio>, ...]}`.
-For this demo, the **last accepted submission in source order** is selected for
-calculation. Other accepted submissions remain available in the database but are
-not calculated automatically. They are not merged as incremental trade updates.
+| Feed type | Relational tables | Example source |
+| --- | --- | --- |
+| `counterparties` | `input_counterparties` | Counterparty/reference-data system |
+| `credit_curves` | `input_credit_curves`, `input_credit_curve_points` | Credit market-data system |
+| `master_agreements` | `input_master_agreements` | Legal agreement system |
+| `csas` | `input_csas` | Collateral agreement system |
+| `trades` | `input_trades` | Front-office trade system |
+| `settings` | `input_settings` | Market assumptions and run configuration for this demo |
 
-| Stored field | Purpose |
-| --- | --- |
-| `submission_id`, `ingestion_id`, `submission_index` | Submission identity, group, and source ordering |
-| `request_key`, `source`, `received_at` | Airflow run reference, file/generator provenance, and ingestion timestamp |
-| `raw_text`, `raw_payload` | Submitted JSON text and parsed JSONB; malformed JSON retains text with a null parsed payload |
-| `status`, `validation_errors`, `validated_at` | `pending`, `accepted`, or `rejected`, with recorded errors and validation timestamp |
-| `valuation_date`, `batch_id`, `validated_snapshot` | Typed valuation date and frozen validated snapshot for accepted submissions |
-| `selected_for_calculation`, `snapshot_path` | Selected portfolio and its shared calculation artifact path |
+The tables contain explicit typed fields and one row per entity or curve point,
+keyed by feed version and source row index. Identifiers are indexed within a feed.
+Invalid business values can still land: staging columns are nullable and each
+`raw_row` retains that entity's original values. Curve points are separate rows,
+rather than an array inside a curve record. Calculation inputs are assembled from
+these **relational columns**, not a portfolio JSONB field. Filter through an accepted
+input set when querying validated business data, since the landing tables also
+retain rejected source rows.
 
-Raw ingestion commits before the validation task starts. Accepted snapshots are
-saved in PostgreSQL before results are calculated. The selected snapshot is also
-written to the usual `<output>/<batch_id>/inputs.json` so calculation tasks and
-the VS Code replay command continue to work. `batches` retains successful result
-publication metadata as before. Rejected submissions never trigger calculations.
-If all submissions are rejected, the task fails **after** rejection records commit.
+Metadata and audit tables are:
 
-Clearing/retrying ingestion in the same Airflow run reuses its submission records.
-Changing the source contents during that retry is rejected; submit corrected data
-in a new run to preserve the original history. Retrying validation preserves its
-recorded outcomes and can recreate a missing selected snapshot artifact from
-the database. A manual input run can reuse stored records with
-`{"ingestion_id":"<ingestion_id>"}` without the original source file.
+- `input_feed_submissions`: feed type/version, source, date, checksum, request key,
+  receipt timestamp, and row-validation status. `raw_document` is retained only
+  when the document cannot be parsed into rows.
+- `input_ingestions`: request provenance and expected number of input sets, allowing
+  interrupted ingestion to resume without calculating an incomplete group.
+- `input_sets`: explicit portfolio assemblies, validation status, batch identity,
+  and selected artifact path; no full portfolio payload is stored here.
+- `input_set_feeds`: the exact feed versions bound to each input set.
+- `input_validation_errors`: input set, feed, source row, optional curve-point index,
+  field, reason, and timestamp. A bad trade rejects its complete input set; it is
+  never silently excluded from risk calculations.
+
+Raw rows commit before business validation. A valid set is frozen into the usual
+`<output>/<batch_id>/inputs.json` for calculation tasks and VS Code replay. Existing
+result-side `batches.input_snapshot` remains a publication audit snapshot; it is
+not the primary input store. If all sets are rejected, rejection records commit
+before the validation task fails. With several demo alternatives, the last accepted
+set in source order is selected; the others remain audited and are not calculated.
+
+### Supply independently arriving feeds
+
+The six example sources are under [examples/xva/feeds](examples/xva/feeds).
+Entity feeds accept an array of rows, or `{"valuation_date":"2026-10-11","rows":[...]}`.
+The settings feed accepts a single object containing `valuation_date`,
+`reporting_currency`, `market`, and `simulation`, or its flat relational fields.
+A CSA feed must be present but can explicitly contain `[]` for an entirely
+uncollateralized portfolio.
+
+To ingest one source independently, trigger **`xva_feed_ingestion`** with:
+
+```json
+{
+  "feed_type": "trades",
+  "input_path": "/path/to/front-office/trades.json",
+  "valuation_date": "2026-10-11",
+  "source": "front-office"
+}
+```
+
+The `ingest_source` return-value XCom contains its `feed_id`. This DAG stages the
+source only; it does not trigger calculations. The same operation is available
+from the CLI:
+
+```bash
+python -m risk_pipeline.xva.feeds --feed-type trades \
+  --input /path/to/front-office/trades.json --valuation-date 2026-10-11 \
+  --source front-office
+```
+
+Once all sources have arrived, trigger **`xva_inputs`** with their explicit IDs:
+
+```json
+{
+  "valuation_date": "2026-10-11",
+  "feeds": {
+    "counterparties": {"feed_id": "<counterparty-feed-id>"},
+    "credit_curves": {"feed_id": "<credit-feed-id>"},
+    "master_agreements": {"feed_id": "<agreement-feed-id>"},
+    "csas": {"feed_id": "<csa-feed-id>"},
+    "trades": {"feed_id": "<trade-feed-id>"},
+    "settings": {"feed_id": "<settings-feed-id>"}
+  }
+}
+```
+
+A feed entry may instead be a file path, or an object with `path` and `source`;
+then `xva_inputs` stages that particular source before binding it. References and
+file entries can be mixed. Relative paths resolve against the project checkout.
+To correct a trade feed, ingest a **new trade version** and create a new input set
+with that ID while reusing the other source IDs. Existing accepted sets remain
+immutable. Clearing a task reuses unchanged versions; changed contents under the
+same retry key are rejected. Retrying validation can reconstruct a missing snapshot
+artifact from its normalized database rows. `{"ingestion_id":"<ingestion_id>"}`
+reuses an existing group without requiring its source files.
+
+Legacy combined files and generated portfolios are compatibility adapters: they
+are split into individual entity feeds before validation. Existing old
+`input_submissions` records are retained unchanged. Referencing an old ingestion
+ID creates normalized feed versions for it and revalidates them; no historical
+input or output table is deleted.
 
 ### Generate noisy demo inputs with deliberate rejections
 
@@ -225,6 +301,7 @@ Trigger `xva_inputs` with this configuration in the Airflow UI:
 }
 ```
 
+The generator creates independent feed versions for each alternative input set.
 For the supplied template this produces **six accepted and two rejected portfolios**,
 then calculates the last accepted one. Ordinary noise varies rates, notionals,
 recovery rates, credit survival probabilities, and CSA thresholds within valid
@@ -250,21 +327,33 @@ python -m risk_pipeline.xva.generation --output /tmp/xva-submissions.json \
 airflow dags trigger xva_inputs --conf '{"input_path":"/tmp/xva-submissions.json"}'
 ```
 
-Inspect outcomes and individual errors with:
+Generate separate source files instead of a combined envelope with:
+
+```bash
+python -m risk_pipeline.xva.generation --feed-directory /tmp/xva-feeds \
+  --count 8 --seed 42 --noise 0.1 --rejection-rate 0.25 --valuation-date 2026-10-11
+```
+
+Each `submission-NNN` directory contains six feed files and `run_config.json`.
+Use that configuration to submit one alternative through `xva_inputs`.
+
+Inspect source versions, structured rejections, and specific trade rows with:
 
 ```sql
-SELECT ingestion_id, status, COUNT(*)
-FROM airflow_xva.input_submissions
-GROUP BY ingestion_id, status;
+SELECT feed_id, feed_type, source, valuation_date, received_at, status
+FROM airflow_xva.input_feed_submissions ORDER BY received_at DESC;
 
-SELECT submission_id, request_key, source, received_at, validation_errors
-FROM airflow_xva.input_submissions
-WHERE status = 'rejected'
-ORDER BY received_at DESC, submission_index;
+SELECT e.submission_id, f.source, e.feed_type, e.row_index, e.point_index,
+       e.field, e.message
+FROM airflow_xva.input_validation_errors e
+LEFT JOIN airflow_xva.input_feed_submissions f USING (feed_id)
+ORDER BY e.error_id DESC;
 
-SELECT valuation_date, batch_id, validated_snapshot
-FROM airflow_xva.input_submissions
-WHERE status = 'accepted' AND selected_for_calculation;
+SELECT t.trade_id, t.counterparty_code, t.currency, t.notional
+FROM airflow_xva.input_trades t
+JOIN airflow_xva.input_set_feeds b ON b.feed_id = t.feed_id AND b.feed_type = 'trades'
+JOIN airflow_xva.input_sets s ON s.submission_id = b.submission_id
+WHERE s.status = 'accepted' AND s.submission_id = '<submission_id>';
 ```
 
 ## Input contract
@@ -408,8 +497,8 @@ repeatable-read, read-only transaction,
 checks the requested batch and reconciliation, and does not change results or
 recalculate. Repeated reporting replaces the same deterministic report files.
 
-The `airflow_xva` PostgreSQL schema contains `input_submissions` for input audit
-and accepted snapshots, plus `batches`, `trade_pv`, `exposures`,
+The `airflow_xva` PostgreSQL schema contains the normalized input/feed tables
+described above, plus `batches`, `trade_pv`, `exposures`,
 `netting_set_cva`, and `counterparty_xva` tables. **Output tables contain
 `valuation_date`, not `batch_id`.** Their primary keys are:
 
@@ -567,9 +656,10 @@ also verify real transaction rollback, read-only enforcement, concurrent reruns,
 valuation-date replacement, preservation of other dates, and archival migration.
 They also cover generic XVA keys, adjustment defaults and resets, manual-edit
 timestamps, signed measures, and calculated versus adjusted reporting.
-Input tests verify commit-before-validation, durable rejection reasons, exact
-seeded rejection counts, coherent generated dates, immutable ingestion retries,
-database-based freezing, and missing-artifact recovery.
+Input tests verify commit-before-validation, durable row-level rejection reasons,
+independent feed reuse, explicit date binding, thousands of trade rows, preserved
+legacy history, seeded rejection counts, immutable retries, interrupted-group
+recovery, and reconstruction from normalized database rows.
 Workflow tests check
 scheduled feed dates, cross-DAG batch identities, isolated report reruns,
 read-only report generation, and rejection of superseded batches. DAG tests

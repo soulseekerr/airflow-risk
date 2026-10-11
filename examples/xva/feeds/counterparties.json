@@ -1,0 +1,17 @@
+{
+  "valuation_date": "2026-10-10",
+  "rows": [
+    {
+      "name": "Demo Bank",
+      "code": "0000001",
+      "recovery_rate": 0.4,
+      "credit_curve_id": "DEMO_BANK"
+    },
+    {
+      "name": "Demo Corporate",
+      "code": "0000002",
+      "recovery_rate": 0.4,
+      "credit_curve_id": "DEMO_CORP"
+    }
+  ]
+}
