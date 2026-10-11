@@ -1,6 +1,7 @@
 
 
 def summarize_trades(trades, threshold):
+    """Return trade count, signed total MTM, and count above the absolute-MTM threshold."""
     total_mtm = sum(trade["mtm"] for trade in trades)
 
     large_trade_count = sum(

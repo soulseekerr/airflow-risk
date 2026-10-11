@@ -13,12 +13,14 @@ from risk_pipeline.xva.postgres import transaction
 
 @pytest.fixture
 def inputs():
+    """Load a fresh sample portfolio with fewer simulation paths for fast calculation tests."""
     value = read_json(Path(__file__).resolve().parents[1] / "examples/xva/inputs.json")
     value["simulation"]["paths"] = 4
     return value
 
 
 def test_reporting_currency_must_be_eur_even_for_single_currency_inputs(inputs):
+    """Reject a consistent non-EUR portfolio because the demo has no FX conversion."""
     inputs["reporting_currency"] = "USD"
     for row in inputs["trades"] + inputs["csas"]:
         row["currency"] = "USD"
@@ -27,6 +29,7 @@ def test_reporting_currency_must_be_eur_even_for_single_currency_inputs(inputs):
 
 
 def test_swap_pv_direction_par_zero_rate_and_expiry(inputs):
+    """Verify swap PV signs, par pricing, the zero-rate limit, and zero value after maturity."""
     trade = inputs["trades"][0]
     as_of = date(2026, 10, 10)
     years = (date(2028, 10, 10) - as_of).days / 365
@@ -39,6 +42,7 @@ def test_swap_pv_direction_par_zero_rate_and_expiry(inputs):
 
 
 def test_survival_interpolation_and_no_extrapolation(inputs):
+    """Verify log-linear survival interpolation and reject dates beyond the credit curve."""
     curve = inputs["credit_curves"][0]
     valuation = date(2026, 10, 10)
     assert survival(curve, valuation, valuation) == 1
@@ -51,6 +55,7 @@ def test_survival_interpolation_and_no_extrapolation(inputs):
 
 
 def test_scenarios_repeatable_and_shared(inputs):
+    """Check seeded scenarios repeat exactly and cover the portfolio horizon."""
     first = generate_scenarios(inputs)
     assert first == generate_scenarios(inputs)
     inputs["simulation"]["seed"] += 1
@@ -60,6 +65,7 @@ def test_scenarios_repeatable_and_shared(inputs):
 
 
 def test_netting_before_positive_part(inputs):
+    """Verify offsetting trades net to zero before positive exposure is calculated."""
     trade = inputs["trades"][0]
     opposite = {**trade, "direction": "receive_fixed"}
     dates = [date(2026, 10, 10), date(2026, 10, 11)]
@@ -68,6 +74,7 @@ def test_netting_before_positive_part(inputs):
 
 
 def test_collateral_frequency_lag_mta_and_threshold(inputs):
+    """Check margin dates, settlement lag, minimum transfers, and receiving thresholds."""
     trade = inputs["trades"][0]
     dates = [date(2026, 10, 10) + timedelta(days=i) for i in range(5)]
     csa = {**inputs["csas"][0], "margin_frequency_days": 2, "settlement_lag_days": 1,
@@ -84,6 +91,7 @@ def test_collateral_frequency_lag_mta_and_threshold(inputs):
 
 
 def test_collateral_directions_initial_balance_and_expiry(inputs):
+    """Check posting/receiving permissions, initial balances, and collateral closeout at expiry."""
     csa = inputs["csas"][0]
     assert collateral_target(30000, csa) == 20000
     assert collateral_target(-30000, csa) == -20000
@@ -99,6 +107,7 @@ def test_collateral_directions_initial_balance_and_expiry(inputs):
 
 def test_cva_controlled_example(inputs):
     # Zero rate/volatility; positive swap PV decreases linearly from 100 to zero.
+    """Verify CVA against a simple known exposure/default example and zero-loss limiting cases."""
     inputs["trades"] = [{**inputs["trades"][2], "notional": 10000, "fixed_rate": -0.01, "maturity_date": "2027-10-10"}]
     inputs["market"] = {"flat_rate": 0, "rate_volatility": 0}
     inputs["simulation"]["exposure_frequency_days"] = 365
@@ -146,6 +155,7 @@ def test_cva_controlled_example(inputs):
     (("trades",), []), (("trades",), {}),
 ])
 def test_invalid_inputs_rejected(inputs, path, value):
+    """Reject unsupported or invalid values across the input contract."""
     parent = inputs
     for key in path[:-1]:
         parent = parent[key]
@@ -155,6 +165,7 @@ def test_invalid_inputs_rejected(inputs, path, value):
 
 
 def test_duplicate_allocations_and_collateral_rules(inputs):
+    """Reject duplicate trade identifiers, multiple CSAs per MA, and incompatible collateral balances."""
     duplicate = copy.deepcopy(inputs)
     duplicate["trades"].append(duplicate["trades"][0])
     with pytest.raises(ValueError, match="Duplicate"):
@@ -172,6 +183,7 @@ def test_duplicate_allocations_and_collateral_rules(inputs):
 
 
 def test_batch_publication_repeatability_and_identity(inputs, tmp_path, pg_connection):
+    """Check deterministic batch identity and repeatable publication without duplicate database rows."""
     source = tmp_path / "source.json"
     write_json(source, inputs)
     manifest_path = run_batch(source, tmp_path / "output", pg_connection)
@@ -193,6 +205,7 @@ def test_batch_publication_repeatability_and_identity(inputs, tmp_path, pg_conne
 
 
 def test_corrupt_artifacts_not_published(inputs, tmp_path):
+    """Reject mismatched results and altered frozen snapshots before publication."""
     source = write_json(tmp_path / "source.json", inputs)
     snapshot = freeze_inputs(source, tmp_path / "output")
     scenario_path = simulate(snapshot)
@@ -217,6 +230,7 @@ def test_corrupt_artifacts_not_published(inputs, tmp_path):
 @pytest.mark.parametrize("change", ["pv", "exposure", "netting_cva", "profile_total", "counterparty_total", "missing",
                                    "missing_ma", "missing_date", "currency", "allocation"])
 def test_reconciliation_rejects_broken_results(inputs, change):
+    """Reject missing, misallocated, nonfinite, or financially inconsistent result collections."""
     results = calculate(inputs, generate_scenarios(inputs))
     if change == "pv":
         results["trade_pv"][0]["pv"] = math.inf
@@ -244,6 +258,7 @@ def test_reconciliation_rejects_broken_results(inputs, change):
 
 @pytest.mark.parametrize("change", ["dates", "count", "length", "rate"])
 def test_invalid_scenarios_rejected(inputs, change):
+    """Reject scenario date grids, counts, lengths, or rates that conflict with the input contract."""
     scenarios = generate_scenarios(inputs)
     if change == "dates":
         scenarios["dates"].pop()

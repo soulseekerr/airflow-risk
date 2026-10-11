@@ -21,8 +21,10 @@ from risk_pipeline.xva.workflow import prepare_inputs
     tags=["xva", "inputs"],
 )
 def xva_inputs():
+    """Build the daily input DAG that freezes a batch and triggers its calculation run."""
     @task
     def validate_and_freeze():
+        """Resolve the run configuration, validate scheduled valuation dates, and return the frozen handoff."""
         context = get_current_context()
         run = context["dag_run"]
         run_type = getattr(run.run_type, "value", run.run_type)

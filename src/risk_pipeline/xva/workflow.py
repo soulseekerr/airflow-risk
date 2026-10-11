@@ -7,6 +7,11 @@ from risk_pipeline.xva.batch import freeze_inputs, load_snapshot, read_json
 
 
 def prepare_inputs(configuration, repository, scheduled_date=None):
+    """Resolve portable input/output locations and freeze the requested batch.
+
+    Scheduled runs require inputs matching the interval start date. Return the
+    batch ID and snapshot path used to trigger the calculation DAG.
+    """
     repository = Path(os.environ.get("XVA_PROJECT_ROOT", repository)).expanduser().resolve()
     if scheduled_date:
         input_root = Path(os.environ.get("XVA_INPUT_ROOT", str(repository / "data/xva"))).expanduser()
@@ -32,6 +37,7 @@ def prepare_inputs(configuration, repository, scheduled_date=None):
 
 
 def require_snapshot(configuration):
+    """Require a complete calculation handoff and return the path to its verified frozen snapshot."""
     if not configuration.get("batch_id") or not configuration.get("snapshot_path"):
         raise ValueError(
             "Calculation run requires batch_id and snapshot_path in dag_run.conf. "
@@ -47,6 +53,7 @@ def require_snapshot(configuration):
 
 
 def calculation_handoff(snapshot_path, publication_path):
+    """Build and validate the batch ID and publication path passed to the reporting DAG."""
     snapshot = load_snapshot(snapshot_path)
     configuration = {"batch_id": snapshot["batch_id"], "publication_path": str(Path(publication_path).resolve())}
     require_publication(configuration)
@@ -54,6 +61,7 @@ def calculation_handoff(snapshot_path, publication_path):
 
 
 def require_publication(configuration):
+    """Require a complete reporting handoff and verify the manifest identifies a published batch."""
     if not configuration.get("batch_id") or not configuration.get("publication_path"):
         raise ValueError("Report run requires batch_id and publication_path")
     path = str(Path(configuration["publication_path"]).resolve())

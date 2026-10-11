@@ -16,6 +16,7 @@ DAGS_FOLDER = Path(__file__).resolve().parents[1] / "dags"
     ("xva_calculations", "trigger_reports", "reconcile_and_publish", "publication_path"),
 ])
 def test_cross_dag_trigger_renders_complete_configuration(dag_id, trigger_id, upstream, path_key):
+    """Verify rendered XCom handoffs reach the Airflow trigger request with the correct run ID."""
     dag = DagBag(dag_folder=str(DAGS_FOLDER)).dags[dag_id]
     trigger = dag.get_task(trigger_id)
     handoff = {"batch_id": "2026-10-10-example", path_key: "/tmp/xva/example.json"}
@@ -33,6 +34,7 @@ def test_cross_dag_trigger_renders_complete_configuration(dag_id, trigger_id, up
 
 
 def test_no_dag_import_errors():
+    """Check that all repository DAGs load without import errors."""
     dag_bag = DagBag(
         dag_folder=str(DAGS_FOLDER),
     )
@@ -41,6 +43,7 @@ def test_no_dag_import_errors():
 
 
 def test_xcom_demo_dag_exists():
+    """Check that Airflow discovers the original XCom demo DAG."""
     dag_bag = DagBag(
         dag_folder=str(DAGS_FOLDER),
     )
@@ -53,6 +56,7 @@ def test_xcom_demo_dag_exists():
 
 
 def test_xva_dag_chain_and_dependencies():
+    """Verify the three XVA DAGs, their schedules, trigger settings, and task dependencies."""
     dag_bag = DagBag(dag_folder=str(DAGS_FOLDER))
     assert "xva_daily_batch" not in dag_bag.dag_ids
     inputs = dag_bag.dags["xva_inputs"]

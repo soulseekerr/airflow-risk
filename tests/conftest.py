@@ -9,6 +9,7 @@ from risk_pipeline.xva.postgres import transaction
 
 @pytest.fixture
 def pg_connection():
+    """Provide an isolated test database connection and clean only the disposable XVA schemas."""
     connection_id = os.environ.get("XVA_TEST_POSTGRES_CONN_ID")
     if not connection_id:
         pytest.skip("Set XVA_TEST_POSTGRES_CONN_ID for PostgreSQL integration tests")

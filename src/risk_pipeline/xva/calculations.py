@@ -27,6 +27,7 @@ def survival(curve, valuation, target):
 
 
 def generate_scenarios(inputs):
+    """Generate reproducible daily additive Gaussian rate paths using the configured seed."""
     valuation = date.fromisoformat(inputs["valuation_date"])
     horizon = max((date.fromisoformat(t["maturity_date"]) - valuation).days for t in inputs["trades"])
     random_source = random.Random(inputs["simulation"]["seed"])
@@ -51,6 +52,11 @@ def collateral_target(net_value, csa):
 
 
 def exposure_path(trades, dates, rates, csa):
+    """Return daily positive exposure for one MA along one rate path.
+
+    Net trades before applying collateral. Honor margin frequency, settlement
+    lag, thresholds, and minimum transfers; day zero uses the initial balance.
+    """
     balance = csa["initial_balance"] if csa else 0.0
     pending = {}
     exposures = []
@@ -76,6 +82,7 @@ def exposure_path(trades, dates, rates, csa):
 
 
 def reporting_days(inputs, horizon_days):
+    """Select exposure reporting offsets, always including day zero, horizon, and each trade maturity."""
     valuation = date.fromisoformat(inputs["valuation_date"])
     frequency = inputs["simulation"]["exposure_frequency_days"]
     days = set(range(0, horizon_days + 1, frequency)) | {horizon_days}
@@ -84,6 +91,13 @@ def reporting_days(inputs, horizon_days):
 
 
 def calculate(inputs, scenarios):
+    """Calculate trade PV, expected positive exposure by MA, and unilateral CVA.
+
+    Expect validated EUR inputs and daily scenarios covering all trade maturities.
+    Average collateral-adjusted exposure across paths, integrate discounted
+    exposure against survival decrements and loss given default, then aggregate
+    MA CVA by counterparty. Return result collections without writing artifacts.
+    """
     valuation = date.fromisoformat(inputs["valuation_date"])
     dates = [date.fromisoformat(d) for d in scenarios["dates"]]
     flat_rate = inputs["market"]["flat_rate"]
@@ -131,6 +145,11 @@ def calculate(inputs, scenarios):
 
 
 def reconcile(results, inputs=None):
+    """Reject nonfinite amounts and inconsistent exposure, MA CVA, or counterparty CVA totals.
+
+    When inputs are supplied, also verify result completeness, reporting dates,
+    currencies, and counterparty allocations before publication or reporting.
+    """
     if inputs is not None:
         expected_trades = {t["trade_id"] for t in inputs["trades"]}
         expected_mas = {t["ma_id"] for t in inputs["trades"]}

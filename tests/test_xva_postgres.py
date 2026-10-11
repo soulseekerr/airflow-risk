@@ -17,6 +17,7 @@ else:
 
 @pytest.fixture
 def publication(tmp_path, pg_connection):
+    """Publish a small sample batch into the isolated PostgreSQL test database."""
     inputs = read_json(Path(__file__).resolve().parents[1] / "examples/xva/inputs.json")
     inputs["simulation"]["paths"] = 2
     source = write_json(tmp_path / "inputs.json", inputs)
@@ -25,6 +26,7 @@ def publication(tmp_path, pg_connection):
 
 @pytest.mark.parametrize("new_batch", [False, True])
 def test_failed_republication_rolls_back_previous_batch(publication, pg_connection, tmp_path, new_batch):
+    """Inject a storage failure and verify outputs, current-batch metadata, and manifests remain intact."""
     before = load_published_results(publication)
     manifest_before = Path(publication).read_bytes()
     with transaction(pg_connection) as cursor:
@@ -53,6 +55,7 @@ def test_failed_republication_rolls_back_previous_batch(publication, pg_connecti
 
 
 def test_readonly_transaction_rejects_writes(publication, pg_connection):
+    """Verify a report transaction rejects database writes and preserves published results."""
     with pytest.raises(DatabaseError):
         with transaction(pg_connection, readonly=True) as cursor:
             cursor.execute("DELETE FROM airflow_xva.batches")
@@ -60,6 +63,7 @@ def test_readonly_transaction_rejects_writes(publication, pg_connection):
 
 
 def test_concurrent_republication_preserves_one_batch(publication, pg_connection):
+    """Check concurrent publication of one batch creates neither duplicate metadata nor output rows."""
     directory = Path(publication).parent
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(publish, directory / "inputs.json", directory / "results.json", pg_connection) for _ in range(2)]
@@ -72,12 +76,14 @@ def test_concurrent_republication_preserves_one_batch(publication, pg_connection
 
 
 def test_manifest_contains_connection_id_without_credentials(publication, pg_connection):
+    """Check the publication manifest stores only the Airflow connection ID, with no credentials."""
     manifest = read_json(publication)
     assert manifest["storage"] == "postgres" and manifest["connection_id"] == pg_connection
     assert "database" not in manifest and "password" not in manifest
 
 
 def test_output_tables_use_valuation_date_only(publication, pg_connection):
+    """Verify output schemas use valuation dates, omit batch IDs, and store trade PV without currency."""
     manifest = read_json(publication)
     with transaction(pg_connection, readonly=True) as cursor:
         for table in OUTPUT_COLUMNS:
@@ -91,6 +97,7 @@ def test_output_tables_use_valuation_date_only(publication, pg_connection):
 
 
 def test_new_batch_replaces_date_outputs_but_keeps_metadata(publication, tmp_path, pg_connection):
+    """Check replacement removes stale outputs but retains both batches in metadata."""
     snapshot = read_json(Path(publication).parent / "inputs.json")
     inputs = snapshot["inputs"]
     inputs["simulation"]["seed"] += 1
@@ -109,6 +116,7 @@ def test_new_batch_replaces_date_outputs_but_keeps_metadata(publication, tmp_pat
 
 
 def test_other_valuation_dates_remain_available(publication, tmp_path, pg_connection):
+    """Verify publishing another valuation date leaves earlier results accessible."""
     previous = load_published_results(publication)
     inputs = read_json(Path(publication).parent / "inputs.json")["inputs"]
     inputs["valuation_date"] = "2026-10-11"
@@ -144,6 +152,7 @@ def make_legacy_schema(connection_id):
 
 
 def test_trade_pv_csv_is_implicitly_eur(publication):
+    """Check trade PV reporting omits the currency column while retaining EUR semantics."""
     outputs = read_json(generate_reports(publication))["outputs"]
     header = Path(outputs["trade_pv"]).read_text().splitlines()[0].split(",")
     assert "currency" not in header and "pv" in header
@@ -151,6 +160,7 @@ def test_trade_pv_csv_is_implicitly_eur(publication):
 
 
 def test_date_keyed_eur_migration_preserves_pvs(publication, pg_connection):
+    """Verify removing the legacy EUR currency column preserves PV values and is repeatable."""
     previous = load_published_results(publication)
     with transaction(pg_connection) as cursor:
         cursor.execute("ALTER TABLE airflow_xva.trade_pv ADD COLUMN currency VARCHAR(3) NOT NULL DEFAULT 'EUR'")
@@ -164,6 +174,7 @@ def test_date_keyed_eur_migration_preserves_pvs(publication, pg_connection):
 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_non_eur_migration_is_rejected_without_changes(publication, pg_connection, legacy):
+    """Reject non-EUR legacy PV rows without losing or modifying their stored values."""
     if legacy:
         make_legacy_schema(pg_connection)
     else:
@@ -180,6 +191,7 @@ def test_non_eur_migration_is_rejected_without_changes(publication, pg_connectio
 
 
 def test_legacy_migration_preserves_archive_and_current_results(publication, pg_connection):
+    """Verify legacy rows remain archived and unambiguous dates migrate without changing results."""
     before = load_published_results(publication)
     make_legacy_schema(pg_connection)
     with transaction(pg_connection) as cursor:
@@ -194,6 +206,7 @@ def test_legacy_migration_preserves_archive_and_current_results(publication, pg_
 
 
 def test_ambiguous_legacy_dates_require_republication(publication, tmp_path, pg_connection):
+    """Require deliberate republication to select among legacy batches sharing a valuation date."""
     inputs = read_json(Path(publication).parent / "inputs.json")["inputs"]
     inputs["simulation"]["seed"] += 1
     source = write_json(tmp_path / "replacement.json", inputs)
@@ -214,6 +227,7 @@ def test_ambiguous_legacy_dates_require_republication(publication, tmp_path, pg_
 
 
 def test_migration_refuses_to_overwrite_archive(publication, pg_connection):
+    """Check an existing archive blocks migration and leaves active legacy rows intact."""
     make_legacy_schema(pg_connection)
     with transaction(pg_connection) as cursor:
         cursor.execute("CREATE SCHEMA airflow_xva_batch_archive; CREATE TABLE airflow_xva_batch_archive.trade_pv (id INTEGER)")
@@ -226,6 +240,7 @@ def test_migration_refuses_to_overwrite_archive(publication, pg_connection):
 
 
 def test_partial_legacy_schema_is_rejected(publication, pg_connection):
+    """Reject mixed legacy output layouts before attempting a partial migration."""
     make_legacy_schema(pg_connection)
     with transaction(pg_connection) as cursor:
         cursor.execute("ALTER TABLE airflow_xva.counterparty_cva RENAME COLUMN batch_id TO custom_id")
@@ -235,6 +250,7 @@ def test_partial_legacy_schema_is_rejected(publication, pg_connection):
 
 
 def test_manifest_date_must_match_batch(publication):
+    """Reject a publication manifest whose valuation date differs from its frozen snapshot."""
     manifest = read_json(publication)
     manifest["valuation_date"] = "2026-10-11"
     write_json(publication, manifest)
@@ -243,6 +259,7 @@ def test_manifest_date_must_match_batch(publication):
 
 
 def test_generic_xva_defaults_and_timestamp(publication, pg_connection):
+    """Check adjustment defaults, signed XVA measures, and timestamps on inserts and manual updates."""
     with transaction(pg_connection) as cursor:
         cursor.execute("SELECT xva_type, value_calc, value_adj, updated_at FROM airflow_xva.counterparty_xva")
         rows = cursor.fetchall()
@@ -261,6 +278,7 @@ def test_generic_xva_defaults_and_timestamp(publication, pg_connection):
 
 
 def test_manual_adjustments_in_reports_and_reset_on_rerun(publication, pg_connection):
+    """Verify reports use adjusted CVA and republication resets adjustments to calculated values."""
     calculated = load_published_results(publication)[1]["counterparty_cva"]
     with transaction(pg_connection) as cursor:
         cursor.execute("UPDATE airflow_xva.counterparty_xva SET value_adj=value_calc+10 WHERE xva_type='CVA'")
@@ -278,6 +296,7 @@ def test_manual_adjustments_in_reports_and_reset_on_rerun(publication, pg_connec
 
 
 def test_cva_republication_preserves_other_xva_types(publication, pg_connection):
+    """Verify a CVA rerun leaves other XVA measures, adjustments, and timestamps untouched."""
     with transaction(pg_connection) as cursor:
         cursor.execute("""INSERT INTO airflow_xva.counterparty_xva
             (valuation_date, counterparty_code, currency, xva_type, value_calc, value_adj)
@@ -291,6 +310,7 @@ def test_cva_republication_preserves_other_xva_types(publication, pg_connection)
 
 
 def test_date_keyed_cva_migration_preserves_values(publication, pg_connection):
+    """Check old CVA columns migrate to generic calculated/adjusted values without changing amounts."""
     before = load_published_results(publication)
     with transaction(pg_connection) as cursor:
         cursor.execute("""CREATE TABLE airflow_xva.old_counterparty_cva AS
@@ -307,6 +327,7 @@ def test_date_keyed_cva_migration_preserves_values(publication, pg_connection):
 
 
 def test_rename_generic_table_preserves_adjustments_and_timestamps(publication, pg_connection):
+    """Verify renaming an existing generic table preserves manual adjustments and write timestamps."""
     with transaction(pg_connection) as cursor:
         cursor.execute("UPDATE airflow_xva.counterparty_xva SET value_adj=value_calc+7")
         cursor.execute("SELECT counterparty_code, value_calc, value_adj, updated_at FROM airflow_xva.counterparty_xva ORDER BY counterparty_code")
@@ -322,6 +343,7 @@ def test_rename_generic_table_preserves_adjustments_and_timestamps(publication, 
 
 
 def test_rename_refuses_conflicting_tables(publication, pg_connection):
+    """Reject conflicting old and new table names rather than overwriting either table."""
     with transaction(pg_connection) as cursor:
         cursor.execute("CREATE TABLE airflow_xva.counterparty_cva (id INTEGER)")
     with pytest.raises(ValueError, match="Both counterparty_cva and counterparty_xva exist"):
@@ -333,6 +355,7 @@ def test_rename_refuses_conflicting_tables(publication, pg_connection):
 @pytest.mark.parametrize("column", ["value_calc", "value_adj"])
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
 def test_nonfinite_generic_xva_rejected(publication, pg_connection, column, value):
+    """Check PostgreSQL constraints reject infinite and NaN calculated or adjusted XVA amounts."""
     with pytest.raises(DatabaseError):
         with transaction(pg_connection) as cursor:
             cursor.execute(f"UPDATE airflow_xva.counterparty_xva SET {column}=%s", (value,))

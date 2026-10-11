@@ -16,6 +16,11 @@ REPORT_VERSION = "v2"
 
 
 def load_published_results(publication_path):
+    """Read the current batch's date-level results in a repeatable-read transaction.
+
+    Reject superseded or inconsistent publications and reconcile calculated CVA;
+    load adjusted CVA separately so manual edits do not alter calculation checks.
+    """
     manifest = read_json(publication_path)
     require_publication({"batch_id": manifest["batch_id"], "publication_path": publication_path})
     if manifest.get("storage") != "postgres" or not manifest.get("connection_id"):
@@ -56,6 +61,7 @@ def load_published_results(publication_path):
 
 
 def write_csv(path, rows, fields):
+    """Render rows using the supplied column order and atomically write the CSV artifact."""
     stream = io.StringIO(newline="")
     writer = csv.DictWriter(stream, fieldnames=fields)
     writer.writeheader()
@@ -64,6 +70,11 @@ def write_csv(path, rows, fields):
 
 
 def generate_reports(publication_path):
+    """Generate CSV and Markdown reports from published results without recalculating the batch.
+
+    Show calculated and adjusted CVA separately, use adjusted CVA for PV minus
+    CVA, and write the report manifest after all report artifacts are complete.
+    """
     snapshot, results = load_published_results(publication_path)
     batch_id, inputs = snapshot["batch_id"], snapshot["inputs"]
     directory = Path(publication_path).resolve().parent / "reports" / REPORT_VERSION
@@ -108,6 +119,7 @@ def generate_reports(publication_path):
 
 
 def main():
+    """Generate reports for a supplied publication manifest and print the resulting report manifest."""
     parser = argparse.ArgumentParser(description="Generate reports for a published XVA batch")
     parser.add_argument("--publication", required=True)
     args = parser.parse_args()

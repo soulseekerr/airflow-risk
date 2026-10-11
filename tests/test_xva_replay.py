@@ -12,6 +12,7 @@ from risk_pipeline.xva import calculations
 
 @pytest.fixture
 def saved_batch(tmp_path):
+    """Create frozen inputs, scenarios, and reference task results for replay tests without publishing."""
     source = Path(__file__).resolve().parents[1] / "examples/xva/inputs.json"
     inputs = read_json(source)
     inputs["simulation"]["paths"] = 2
@@ -22,6 +23,7 @@ def saved_batch(tmp_path):
 
 
 def test_replay_cli_reproduces_task_results_without_writing(saved_batch):
+    """Check the replay CLI reproduces saved task results exactly and leaves artifacts untouched."""
     before = {path: path.read_bytes() for path in saved_batch.iterdir()}
     process = subprocess.run(
         [sys.executable, "-m", "risk_pipeline.xva.calculations", "--batch-dir", str(saved_batch)],
@@ -32,6 +34,7 @@ def test_replay_cli_reproduces_task_results_without_writing(saved_batch):
 
 
 def test_replay_rejects_mismatched_scenarios(saved_batch, monkeypatch):
+    """Reject replay artifacts whose scenario batch ID differs from the frozen snapshot."""
     payload = read_json(saved_batch / "scenarios.json")
     payload["batch_id"] = "another-batch"
     write_json(saved_batch / "scenarios.json", payload)
@@ -42,12 +45,14 @@ def test_replay_rejects_mismatched_scenarios(saved_batch, monkeypatch):
 
 @pytest.mark.parametrize("regenerate", [False, True])
 def test_interactive_edits_recompute_in_memory(saved_batch, monkeypatch, regenerate):
+    """Verify interactive input edits change results and optional scenario regeneration stays in memory."""
     before = {path: path.read_bytes() for path in saved_batch.iterdir()}
     original_calculate = calculations.calculate
     results, scenarios_used = [], []
     current_inputs = None
 
     def observe(inputs, scenarios):
+        """Capture calculation inputs, scenario copies, and results while executing the real pricing function."""
         nonlocal current_inputs
         current_inputs = inputs
         scenarios_used.append(copy.deepcopy(scenarios))
@@ -58,6 +63,7 @@ def test_interactive_edits_recompute_in_memory(saved_batch, monkeypatch, regener
     responses = iter(["invalid", "r" if regenerate else "", "q"])
 
     def edit_at_prompt(prompt):
+        """Simulate debugger edits and terminal commands between successive replay calculations."""
         response = next(responses)
         if response in ("r", ""):
             if regenerate:

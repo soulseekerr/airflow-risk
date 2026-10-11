@@ -10,6 +10,11 @@ DEFAULT_CONNECTION_ID = "risk_postgres"
 
 @contextmanager
 def transaction(connection_id, readonly=False):
+    """Yield a PostgreSQL cursor, commit on success, and roll back on any exception.
+
+    Close both cursor and connection; optionally enforce a repeatable-read,
+    read-only transaction for reporting.
+    """
     with closing(PostgresHook(postgres_conn_id=connection_id).get_conn()) as connection:
         connection.autocommit = False
         with closing(connection.cursor()) as cursor:

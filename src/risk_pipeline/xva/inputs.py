@@ -8,6 +8,7 @@ MODEL_VERSION = "flat-rate-swap-demo-v1"
 
 
 def number(value, label, lower=None, upper=None):
+    """Return a finite numeric value within optional inclusive bounds; reject booleans."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label} must be a finite number")
     if not math.isfinite(value):
@@ -20,18 +21,21 @@ def number(value, label, lower=None, upper=None):
 
 
 def integer(value, label, minimum):
+    """Return an integer at or above the minimum; reject booleans and fractional values."""
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"{label} must be an integer >= {minimum}")
     return value
 
 
 def identifier(value, label):
+    """Require a nonempty string identifier, preserving its original spelling and leading zeros."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a nonempty string")
     return value
 
 
 def indexed(rows, key):
+    """Index a nonempty row list by unique string identifiers, rejecting duplicate keys."""
     result = {}
     if not isinstance(rows, list) or not rows:
         raise ValueError(f"{key} collection must be a nonempty list")

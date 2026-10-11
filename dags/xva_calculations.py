@@ -21,20 +21,25 @@ from risk_pipeline.xva.workflow import calculation_handoff, require_snapshot
     tags=["xva", "calculations"],
 )
 def xva_calculations():
+    """Build the triggered DAG that simulates, values, publishes, and requests batch reports."""
     @task
     def validate_batch():
+        """Verify the batch ID and snapshot path supplied in the calculation run configuration."""
         return require_snapshot(get_current_context()["dag_run"].conf or {})
 
     @task
     def generate_market_scenarios(snapshot_path):
+        """Write scenario paths for the frozen batch and return their artifact path through XCom."""
         return simulate(snapshot_path)
 
     @task
     def calculate_pv_exposure_cva(snapshot_path, scenario_path):
+        """Calculate PV, exposure, and CVA from the saved batch artifacts and return the result path."""
         return value_batch(snapshot_path, scenario_path)
 
     @task(retries=2, retry_delay=timedelta(seconds=10))
     def reconcile_and_publish(snapshot_path, result_path):
+        """Publish reconciled results and return the validated handoff for the report DAG."""
         manifest = publish(snapshot_path, result_path)
         return calculation_handoff(snapshot_path, manifest)
 

@@ -23,6 +23,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def source(tmp_path):
+    """Write temporary sample inputs with two simulation paths for workflow tests."""
     inputs = read_json(REPOSITORY / "examples/xva/inputs.json")
     inputs["simulation"]["paths"] = 2
     return write_json(tmp_path / "input.json", inputs)
@@ -30,10 +31,12 @@ def source(tmp_path):
 
 @pytest.fixture
 def publication(source, tmp_path, pg_connection):
+    """Publish a small sample batch into the isolated PostgreSQL test database."""
     return run_batch(source, tmp_path / "output", pg_connection)
 
 
 def test_input_handoff_and_manual_defaults(tmp_path):
+    """Verify manual defaults produce a valid frozen handoff and reject a mismatched batch ID."""
     handoff = prepare_inputs({"output_root": str(tmp_path)}, REPOSITORY)
     assert require_snapshot(handoff) == handoff["snapshot_path"]
     assert handoff["batch_id"].startswith("2026-10-10-")
@@ -43,6 +46,7 @@ def test_input_handoff_and_manual_defaults(tmp_path):
 
 @pytest.mark.parametrize("selection", ["airflow_home", "user_home", "environment", "configuration", "relative_output"])
 def test_portable_output_paths(tmp_path, monkeypatch, selection):
+    """Check output location precedence and path expansion across supported configuration sources."""
     monkeypatch.delenv("XVA_OUTPUT_ROOT", raising=False)
     monkeypatch.delenv("XVA_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path / "airflow"))
@@ -68,6 +72,7 @@ def test_portable_output_paths(tmp_path, monkeypatch, selection):
 
 
 def test_project_root_override_for_copied_dags(source, tmp_path, monkeypatch):
+    """Verify a project-root override finds inputs when DAG files live outside the checkout."""
     project = tmp_path / "checkout"
     write_json(project / "examples/xva/inputs.json", read_json(source))
     monkeypatch.setenv("XVA_PROJECT_ROOT", str(project))
@@ -79,6 +84,7 @@ def test_project_root_override_for_copied_dags(source, tmp_path, monkeypatch):
 
 
 def test_relative_scheduled_input_root(source, tmp_path, monkeypatch):
+    """Resolve a relative scheduled feed directory against the project root."""
     write_json(tmp_path / "feed/2026-10-10.json", read_json(source))
     monkeypatch.setenv("XVA_INPUT_ROOT", "feed")
     monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path / "airflow"))
@@ -89,6 +95,7 @@ def test_relative_scheduled_input_root(source, tmp_path, monkeypatch):
 
 
 def test_scheduled_input_feed_and_date_validation(source, tmp_path, monkeypatch):
+    """Load the correct daily feed and reject stale dates or missing files before freezing."""
     root = tmp_path / "feed"
     inputs = read_json(source)
     write_json(root / "2026-10-10.json", inputs)
@@ -104,17 +111,20 @@ def test_scheduled_input_feed_and_date_validation(source, tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("configuration", [{}, {"batch_id": "one"}, {"snapshot_path": "file"}])
 def test_calculation_requires_complete_handoff(configuration):
+    """Reject incomplete calculation configuration with guidance on starting or retrying a batch."""
     with pytest.raises(ValueError, match="requires.*dag_run.conf.*trigger xva_inputs"):
         require_snapshot(configuration)
 
 
 @pytest.mark.parametrize("configuration", [{}, {"batch_id": "one"}, {"publication_path": "file"}])
 def test_reports_require_complete_handoff(configuration):
+    """Reject report configurations lacking the batch ID or publication path."""
     with pytest.raises(ValueError, match="requires"):
         require_publication(configuration)
 
 
 def test_publication_handoff_and_identity_checks(publication):
+    """Verify reporting handoff identity and reject a manifest that is no longer marked published."""
     snapshot = str(Path(publication).parent / "inputs.json")
     handoff = calculation_handoff(snapshot, publication)
     assert require_publication(handoff) == publication
@@ -128,7 +138,9 @@ def test_publication_handoff_and_identity_checks(publication):
 
 
 def test_reports_reproduce_published_results_without_calculation(publication, monkeypatch):
+    """Verify repeatable reports use database results without changing artifacts or running calculations."""
     def forbidden(*args, **kwargs):
+        """Fail if report generation attempts to simulate scenarios or recalculate valuations."""
         raise AssertionError("Reporting must not calculate or simulate")
     monkeypatch.setattr("risk_pipeline.xva.batch.simulate", forbidden)
     monkeypatch.setattr("risk_pipeline.xva.batch.value_batch", forbidden)
@@ -158,6 +170,7 @@ def test_reports_reproduce_published_results_without_calculation(publication, mo
 
 
 def test_reports_reject_superseded_batch(publication, source, tmp_path, pg_connection):
+    """Reject an old batch after another publication replaces its valuation date outputs."""
     first_snapshot, first = load_published_results(publication)
     inputs = read_json(source)
     inputs["simulation"]["seed"] += 1
@@ -173,6 +186,7 @@ def test_reports_reject_superseded_batch(publication, source, tmp_path, pg_conne
 
 @pytest.mark.parametrize("change", ["missing_batch", "missing_connection", "wrong_snapshot", "wrong_total", "bad_exposure", "legacy_sqlite"])
 def test_unpublished_or_inconsistent_results_not_reported(publication, tmp_path, change, pg_connection):
+    """Reject missing, corrupted, or unsupported publications before writing any report artifacts."""
     manifest = read_json(publication)
     if change == "missing_batch":
         manifest["batch_id"] = "absent"
@@ -204,6 +218,7 @@ def test_unpublished_or_inconsistent_results_not_reported(publication, tmp_path,
 
 
 def test_reports_cli(publication, monkeypatch, capsys):
+    """Verify the report CLI prints a successful JSON manifest for a published batch."""
     monkeypatch.setattr(sys, "argv", ["reports", "--publication", publication])
     main()
     assert json.loads(capsys.readouterr().out)["status"] == "reported"

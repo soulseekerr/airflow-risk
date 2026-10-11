@@ -17,12 +17,15 @@ from risk_pipeline.xva.workflow import require_publication
     tags=["xva", "reports"],
 )
 def xva_reports():
+    """Build the triggered DAG that generates reports for an already published batch."""
     @task
     def validate_published_batch():
+        """Verify the reporting run configuration refers to a published manifest for the requested batch."""
         return require_publication(get_current_context()["dag_run"].conf or {})
 
     @task
     def create_reports(publication_path):
+        """Generate reports from the publication manifest and return the report manifest path."""
         return generate_reports(publication_path)
 
     create_reports(validate_published_batch())

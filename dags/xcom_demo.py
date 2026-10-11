@@ -11,6 +11,7 @@ from airflow.sdk import get_current_context
 
 @task
 def show_run_context():
+    """Log the Airflow logical date and data interval for the demo run."""
     context = get_current_context()
 
     print(
@@ -42,8 +43,10 @@ def show_run_context():
 )
 def xcom_demo():
 
+    """Build the daily XCom demonstration DAG with summaries, retry behavior, and database output."""
     @task
     def get_run_date():
+        """Return the data interval start date as the demo valuation date in ISO format."""
         context = get_current_context()
 
         run_date = context["data_interval_start"].date()
@@ -54,6 +57,7 @@ def xcom_demo():
 
     @task
     def extract():
+        """Return three sample trades to demonstrate passing structured values through XCom."""
         trades = [
             {"trade_id": "T001", "mtm": 100_000},
             {"trade_id": "T002", "mtm": -25_000},
@@ -65,6 +69,7 @@ def xcom_demo():
     @task(multiple_outputs=True)
     def summarize(trades):
         # AIRFLOW VARIABLE
+        """Read the MTM threshold from an Airflow Variable and return the shared trade summary."""
         THRESHOLD= int(
             Variable.get(
                 "mtm_threshold",
@@ -99,6 +104,7 @@ def xcom_demo():
         retry_delay=timedelta(seconds=10),
     )
     def flaky_calculation(total_mtm):
+        """Simulate a first-attempt failure, then return a one-percent MTM adjustment on retry."""
         context = get_current_context()
         ti = context["ti"]
 
@@ -114,6 +120,7 @@ def xcom_demo():
 
     @task
     def save_to_database(run_date, trade_count, total_mtm, large_trade_count):
+        """Create the demo storage objects if needed and insert the daily summary via risk_postgres."""
         hook = PostgresHook(
             postgres_conn_id="risk_postgres"
         )
@@ -158,6 +165,7 @@ def xcom_demo():
         total_mtm,
         large_trade_count,
     ):
+        """Print the demo run date, trade counts, and adjusted total MTM."""
         print(f"Run date: {run_date}")
         print(f"Number of trades: {trade_count}")
         print(f"Total MTM: {total_mtm:,}")

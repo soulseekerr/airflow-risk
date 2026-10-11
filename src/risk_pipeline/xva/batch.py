@@ -13,15 +13,18 @@ from risk_pipeline.xva.postgres import DEFAULT_CONNECTION_ID, OUTPUT_COLUMNS, en
 
 
 def read_json(path):
+    """Read an artifact from disk and decode its JSON payload."""
     return json.loads(Path(path).read_text())
 
 
 def write_json(path, value):
+    """Serialize finite JSON values deterministically and return the atomically written file path."""
     payload = json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n"
     return write_text(path, payload)
 
 
 def write_text(path, payload):
+    """Replace a UTF-8 artifact atomically and return its absolute path."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
@@ -36,6 +39,7 @@ def write_text(path, payload):
 
 
 def freeze_inputs(input_path, output_root):
+    """Validate inputs, derive their content-based batch ID, and write the frozen snapshot."""
     inputs = validate(read_json(input_path))
     snapshot = {"model_version": MODEL_VERSION, "inputs": inputs}
     digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True, allow_nan=False).encode()).hexdigest()
@@ -46,10 +50,12 @@ def freeze_inputs(input_path, output_root):
 
 
 def load_snapshot(path):
+    """Read a frozen snapshot and verify its input contract, model version, and batch identity."""
     return validate_snapshot(read_json(path))
 
 
 def validate_snapshot(snapshot):
+    """Reject altered snapshots or unsupported model versions and return the validated snapshot."""
     identity = {"model_version": snapshot["model_version"], "inputs": snapshot["inputs"]}
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, allow_nan=False).encode()).hexdigest()
     if snapshot["model_version"] != MODEL_VERSION or snapshot["batch_id"] != f"{snapshot['inputs']['valuation_date']}-{digest}":
@@ -59,12 +65,14 @@ def validate_snapshot(snapshot):
 
 
 def simulate(snapshot_path):
+    """Generate daily rate paths from a frozen snapshot and write the batch-tagged scenario artifact."""
     snapshot = load_snapshot(snapshot_path)
     scenarios = generate_scenarios(snapshot["inputs"])
     return write_json(Path(snapshot_path).parent / "scenarios.json", {"batch_id": snapshot["batch_id"], "scenarios": scenarios})
 
 
 def value_batch(snapshot_path, scenario_path):
+    """Check that scenarios belong to the snapshot, calculate results, and write the result artifact."""
     snapshot = load_snapshot(snapshot_path)
     scenarios = read_json(scenario_path)
     if scenarios["batch_id"] != snapshot["batch_id"]:
@@ -74,6 +82,11 @@ def value_batch(snapshot_path, scenario_path):
 
 
 def publish(snapshot_path, result_path, connection_id=DEFAULT_CONNECTION_ID):
+    """Reconcile results and transactionally replace this date's CVA outputs in PostgreSQL.
+
+    Retain other XVA types, reset adjusted CVA to calculated CVA, and write the
+    publication manifest only after the database transaction commits.
+    """
     snapshot = load_snapshot(snapshot_path)
     payload = read_json(result_path)
     if payload["batch_id"] != snapshot["batch_id"]:
@@ -115,6 +128,7 @@ def publish(snapshot_path, result_path, connection_id=DEFAULT_CONNECTION_ID):
 
 
 def run_batch(input_path, output_root, connection_id=DEFAULT_CONNECTION_ID):
+    """Freeze inputs, simulate, value, and publish a batch; return the publication manifest path."""
     snapshot = freeze_inputs(input_path, output_root)
     scenarios = simulate(snapshot)
     results = value_batch(snapshot, scenarios)
@@ -122,6 +136,7 @@ def run_batch(input_path, output_root, connection_id=DEFAULT_CONNECTION_ID):
 
 
 def main():
+    """Run the complete batch from CLI arguments and print its committed publication manifest."""
     parser = argparse.ArgumentParser(description="Run the educational exposure/CVA batch")
     parser.add_argument("--inputs", required=True)
     parser.add_argument("--output", required=True)

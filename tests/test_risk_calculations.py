@@ -2,6 +2,7 @@ from risk_pipeline.calculations import summarize_trades
 
 
 def test_summarize_trades():
+    """Verify trade count, signed MTM aggregation, and the large-trade count for a sample portfolio."""
     trades = [
         {"trade_id": "T001", "mtm": 100_000},
         {"trade_id": "T002", "mtm": -25_000},
@@ -18,6 +19,7 @@ def test_summarize_trades():
     assert result["large_trade_count"] == 2
 
 def test_summarize_trades_empty():
+    """Verify an empty portfolio produces zero totals and counts."""
     result = summarize_trades(
         [],
         threshold=50_000,
@@ -28,6 +30,7 @@ def test_summarize_trades_empty():
     assert result["large_trade_count"] == 0
 
 def test_large_trade_threshold():
+    """Check that positive and negative MTM values exactly at the threshold are counted."""
     trades = [
         {"trade_id": "T001", "mtm": 49_999},
         {"trade_id": "T002", "mtm": 50_000},
@@ -56,6 +59,7 @@ from risk_pipeline.calculations import summarize_trades
     ],
 )
 def test_large_trade_count(threshold, expected_count):
+    """Check large-trade counts across several configured thresholds."""
     trades = [
         {"trade_id": "T001", "mtm": 100_000},
         {"trade_id": "T002", "mtm": -25_000},
