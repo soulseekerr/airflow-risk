@@ -275,6 +275,13 @@ integration resolution. CVA is stored as a nonnegative loss amount; a
 CVA-adjusted asset valuation would subtract it from the clean PV. DVA, FVA,
 MVA, PFE, and sensitivities are outside the current scope.
 
+**Wrong-way risk** occurs when exposure to a counterparty tends to increase as
+that counterparty becomes more likely to default. For example, an energy producer
+may owe more on a commodity derivative as energy prices fall, while those same
+falling prices weaken its ability to pay. This dependence can increase CVA
+relative to an assumption of independent exposure and default; the current demo
+does not model it.
+
 ## Results and reruns
 
 Artifacts are stored beneath `<output>/<batch_id>/`:
