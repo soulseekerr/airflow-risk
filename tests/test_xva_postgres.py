@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import csv
 from pathlib import Path
 
 import pytest
@@ -124,10 +125,12 @@ def test_other_valuation_dates_remain_available(publication, tmp_path, pg_connec
 
 def make_legacy_schema(connection_id):
     """Recreate the previous batch-keyed layout, with its foreign keys."""
-    primary_keys = {"trade_pv": "trade_id", "exposures": "ma_id, exposure_date", "netting_set_cva": "ma_id", "counterparty_cva": "counterparty_code"}
+    primary_keys = {"trade_pv": "trade_id", "exposures": "ma_id, exposure_date", "netting_set_cva": "ma_id", "counterparty_xva": "counterparty_code"}
     with transaction(connection_id) as cursor:
         for table, columns in OUTPUT_COLUMNS.items():
             fields = ", ".join(f"t.{column.strip()}" for column in columns.split(","))
+            if table == "counterparty_xva":
+                fields = "t.counterparty_code, t.currency, t.value_calc AS cva"
             cursor.execute(f"""CREATE TABLE airflow_xva.legacy_{table} AS
                 SELECT b.batch_id, {fields} FROM airflow_xva.{table} t
                 JOIN airflow_xva.batches b ON b.valuation_date = t.valuation_date""")
@@ -137,6 +140,7 @@ def make_legacy_schema(connection_id):
             cursor.execute(f"ALTER TABLE airflow_xva.{table} ADD FOREIGN KEY (batch_id) REFERENCES airflow_xva.batches ON DELETE CASCADE")
         cursor.execute("ALTER TABLE airflow_xva.trade_pv ADD COLUMN currency VARCHAR(3) NOT NULL DEFAULT 'EUR'")
         cursor.execute("ALTER TABLE airflow_xva.batches DROP COLUMN is_current CASCADE")
+        cursor.execute("ALTER TABLE airflow_xva.counterparty_xva RENAME TO counterparty_cva")
 
 
 def test_trade_pv_csv_is_implicitly_eur(publication):
@@ -236,3 +240,99 @@ def test_manifest_date_must_match_batch(publication):
     write_json(publication, manifest)
     with pytest.raises(ValueError, match="valuation date"):
         load_published_results(publication)
+
+
+def test_generic_xva_defaults_and_timestamp(publication, pg_connection):
+    with transaction(pg_connection) as cursor:
+        cursor.execute("SELECT xva_type, value_calc, value_adj, updated_at FROM airflow_xva.counterparty_xva")
+        rows = cursor.fetchall()
+        assert all(kind == "CVA" and calc == adj and stamp.tzinfo is not None for kind, calc, adj, stamp in rows)
+        cursor.execute("""INSERT INTO airflow_xva.counterparty_xva
+            (valuation_date, counterparty_code, currency, xva_type, value_calc)
+            VALUES ('2026-10-10', '0000001', 'EUR', 'DVA', -123)
+            RETURNING value_adj, updated_at""")
+        adj, inserted_at = cursor.fetchone()
+        assert adj == -123
+    with transaction(pg_connection) as cursor:
+        cursor.execute("""UPDATE airflow_xva.counterparty_xva SET value_adj=-110
+            WHERE xva_type='DVA' RETURNING updated_at""")
+        assert cursor.fetchone()[0] > inserted_at
+    assert len(load_published_results(publication)[1]["counterparty_cva"]) == 2
+
+
+def test_manual_adjustments_in_reports_and_reset_on_rerun(publication, pg_connection):
+    calculated = load_published_results(publication)[1]["counterparty_cva"]
+    with transaction(pg_connection) as cursor:
+        cursor.execute("UPDATE airflow_xva.counterparty_xva SET value_adj=value_calc+10 WHERE xva_type='CVA'")
+    report = read_json(generate_reports(publication))
+    assert report["total_cva"] == pytest.approx(sum(r["cva"] for r in calculated))
+    assert report["total_cva_adj"] == pytest.approx(report["total_cva"] + 20)
+    with open(report["outputs"]["counterparty_summary"], newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    for row in rows:
+        assert float(row["cva_adj"]) == pytest.approx(float(row["cva"]) + 10)
+        assert float(row["cva_adjusted_pv"]) == pytest.approx(float(row["pv_t0"]) - float(row["cva_adj"]))
+    directory = Path(publication).parent
+    publish(directory / "inputs.json", directory / "results.json", pg_connection)
+    assert load_published_results(publication)[1]["counterparty_cva"] == calculated
+
+
+def test_cva_republication_preserves_other_xva_types(publication, pg_connection):
+    with transaction(pg_connection) as cursor:
+        cursor.execute("""INSERT INTO airflow_xva.counterparty_xva
+            (valuation_date, counterparty_code, currency, xva_type, value_calc, value_adj)
+            VALUES ('2026-10-10', '0000001', 'EUR', 'DVA', -123, -110) RETURNING updated_at""")
+        inserted_at = cursor.fetchone()[0]
+    directory = Path(publication).parent
+    publish(directory / "inputs.json", directory / "results.json", pg_connection)
+    with transaction(pg_connection, readonly=True) as cursor:
+        cursor.execute("SELECT value_calc, value_adj, updated_at FROM airflow_xva.counterparty_xva WHERE xva_type='DVA'")
+        assert cursor.fetchone() == (-123, -110, inserted_at)
+
+
+def test_date_keyed_cva_migration_preserves_values(publication, pg_connection):
+    before = load_published_results(publication)
+    with transaction(pg_connection) as cursor:
+        cursor.execute("""CREATE TABLE airflow_xva.old_counterparty_cva AS
+            SELECT valuation_date, counterparty_code, currency, value_calc AS cva
+            FROM airflow_xva.counterparty_xva;
+            DROP TABLE airflow_xva.counterparty_xva;
+            ALTER TABLE airflow_xva.old_counterparty_cva RENAME TO counterparty_cva;
+            ALTER TABLE airflow_xva.counterparty_cva ADD PRIMARY KEY (valuation_date, counterparty_code);
+            ALTER TABLE airflow_xva.counterparty_cva ADD CONSTRAINT counterparty_cva_cva_check CHECK (cva>=0);
+        """)
+        ensure_schema(cursor)
+        ensure_schema(cursor)
+    assert load_published_results(publication) == before
+
+
+def test_rename_generic_table_preserves_adjustments_and_timestamps(publication, pg_connection):
+    with transaction(pg_connection) as cursor:
+        cursor.execute("UPDATE airflow_xva.counterparty_xva SET value_adj=value_calc+7")
+        cursor.execute("SELECT counterparty_code, value_calc, value_adj, updated_at FROM airflow_xva.counterparty_xva ORDER BY counterparty_code")
+        previous = cursor.fetchall()
+        cursor.execute("ALTER TABLE airflow_xva.counterparty_xva RENAME TO counterparty_cva")
+        ensure_schema(cursor)
+        ensure_schema(cursor)
+        cursor.execute("SELECT counterparty_code, value_calc, value_adj, updated_at FROM airflow_xva.counterparty_xva ORDER BY counterparty_code")
+        assert cursor.fetchall() == previous
+        cursor.execute("SELECT to_regclass('airflow_xva.counterparty_cva')")
+        assert cursor.fetchone()[0] is None
+    assert all(row["cva_adj"] == row["cva"] + 7 for row in load_published_results(publication)[1]["counterparty_cva"])
+
+
+def test_rename_refuses_conflicting_tables(publication, pg_connection):
+    with transaction(pg_connection) as cursor:
+        cursor.execute("CREATE TABLE airflow_xva.counterparty_cva (id INTEGER)")
+    with pytest.raises(ValueError, match="Both counterparty_cva and counterparty_xva exist"):
+        with transaction(pg_connection) as cursor:
+            ensure_schema(cursor)
+    assert len(load_published_results(publication)[1]["counterparty_cva"]) == 2
+
+
+@pytest.mark.parametrize("column", ["value_calc", "value_adj"])
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_nonfinite_generic_xva_rejected(publication, pg_connection, column, value):
+    with pytest.raises(DatabaseError):
+        with transaction(pg_connection) as cursor:
+            cursor.execute(f"UPDATE airflow_xva.counterparty_xva SET {column}=%s", (value,))

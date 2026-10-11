@@ -1,10 +1,35 @@
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from airflow.dag_processing.dagbag import DagBag
+from airflow.sdk.exceptions import DagRunTriggerException
 from airflow.timetables.interval import CronDataIntervalTimetable
 
 
 DAGS_FOLDER = Path(__file__).resolve().parents[1] / "dags"
+
+
+@pytest.mark.parametrize("dag_id,trigger_id,upstream,path_key", [
+    ("xva_inputs", "trigger_calculations", "validate_and_freeze", "snapshot_path"),
+    ("xva_calculations", "trigger_reports", "reconcile_and_publish", "publication_path"),
+])
+def test_cross_dag_trigger_renders_complete_configuration(dag_id, trigger_id, upstream, path_key):
+    dag = DagBag(dag_folder=str(DAGS_FOLDER)).dags[dag_id]
+    trigger = dag.get_task(trigger_id)
+    handoff = {"batch_id": "2026-10-10-example", path_key: "/tmp/xva/example.json"}
+    ti = Mock()
+    ti.xcom_pull.return_value = handoff
+    ti.get_dag.return_value.is_paused = False
+    trigger.render_template_fields({"ti": ti})
+    assert trigger.conf == handoff
+    assert trigger.trigger_run_id.endswith(handoff["batch_id"])
+    assert all(call.kwargs["task_ids"] == upstream for call in ti.xcom_pull.call_args_list)
+    with pytest.raises(DagRunTriggerException) as request:
+        trigger.execute({"ti": ti})
+    assert request.value.conf == handoff
+    assert request.value.dag_run_id == trigger.trigger_run_id
 
 
 def test_no_dag_import_errors():

@@ -87,7 +87,8 @@ def publish(snapshot_path, result_path, connection_id=DEFAULT_CONNECTION_ID):
         ensure_schema(cursor)
         valuation_date = inputs["valuation_date"]
         for table in OUTPUT_COLUMNS:
-            cursor.execute(f"DELETE FROM airflow_xva.{table} WHERE valuation_date = %s", (valuation_date,))
+            type_filter = " AND xva_type = 'CVA'" if table == "counterparty_xva" else ""
+            cursor.execute(f"DELETE FROM airflow_xva.{table} WHERE valuation_date = %s{type_filter}", (valuation_date,))
         cursor.execute("UPDATE airflow_xva.batches SET is_current = FALSE WHERE valuation_date = %s", (valuation_date,))
         cursor.execute("""INSERT INTO airflow_xva.batches
                            (batch_id, valuation_date, model_version, currency, input_snapshot, is_current)
@@ -103,8 +104,10 @@ def publish(snapshot_path, result_path, connection_id=DEFAULT_CONNECTION_ID):
                                  r["discount_factor"], r["survival_probability"], r["cva_increment"]) for r in results["exposures"]])
         cursor.executemany("INSERT INTO airflow_xva.netting_set_cva VALUES (%s, %s, %s, %s, %s)",
                                [(valuation_date, r["ma_id"], r["counterparty_code"], r["currency"], r["cva"]) for r in results["netting_set_cva"]])
-        cursor.executemany("INSERT INTO airflow_xva.counterparty_cva VALUES (%s, %s, %s, %s)",
-                               [(valuation_date, r["counterparty_code"], r["currency"], r["cva"]) for r in results["counterparty_cva"]])
+        cursor.executemany("""INSERT INTO airflow_xva.counterparty_xva
+                              (valuation_date, counterparty_code, currency, xva_type, value_calc, value_adj)
+                              VALUES (%s, %s, %s, 'CVA', %s, %s)""",
+                               [(valuation_date, r["counterparty_code"], r["currency"], r["cva"], r["cva"]) for r in results["counterparty_cva"]])
     manifest = {"batch_id": batch_id, "valuation_date": valuation_date, "status": "published", "storage": "postgres", "connection_id": connection_id,
                 "trade_count": len(results["trade_pv"]), "netting_set_count": len(results["netting_set_cva"]),
                 "total_cva": sum(r["cva"] for r in results["counterparty_cva"])}

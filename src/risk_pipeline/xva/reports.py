@@ -12,7 +12,7 @@ from risk_pipeline.xva.workflow import require_publication
 from risk_pipeline.xva.postgres import transaction
 
 
-REPORT_VERSION = "v1"
+REPORT_VERSION = "v2"
 
 
 def load_published_results(publication_path):
@@ -37,7 +37,7 @@ def load_published_results(publication_path):
             "trade_pv": "SELECT trade_id, ma_id, counterparty_code, 'EUR' AS currency, pv FROM airflow_xva.trade_pv WHERE valuation_date = %s ORDER BY trade_id",
             "exposures": "SELECT ma_id, exposure_date AS date, counterparty_code, currency, expected_positive_exposure, discount_factor, survival_probability, cva_increment FROM airflow_xva.exposures WHERE valuation_date = %s ORDER BY ma_id, exposure_date",
             "netting_set_cva": "SELECT ma_id, counterparty_code, currency, cva FROM airflow_xva.netting_set_cva WHERE valuation_date = %s ORDER BY ma_id",
-            "counterparty_cva": "SELECT counterparty_code, currency, cva FROM airflow_xva.counterparty_cva WHERE valuation_date = %s ORDER BY counterparty_code",
+            "counterparty_cva": "SELECT counterparty_code, currency, value_calc AS cva, value_adj AS cva_adj FROM airflow_xva.counterparty_xva WHERE valuation_date = %s AND xva_type = 'CVA' ORDER BY counterparty_code",
         }
         results = {}
         for key, query in queries.items():
@@ -76,10 +76,10 @@ def generate_reports(publication_path):
         pv = sum(t["pv"] for t in trades)
         summaries.append({**prefix, "counterparty_code": code, "counterparty_name": counterparties[code]["name"],
                           "currency": cva["currency"], "trade_count": len(trades), "pv_t0": pv,
-                          "cva": cva["cva"], "cva_adjusted_pv": pv - cva["cva"]})
+                          "cva": cva["cva"], "cva_adj": cva["cva_adj"], "cva_adjusted_pv": pv - cva["cva_adj"]})
     outputs = {}
     outputs["counterparty_summary"] = write_csv(directory / "counterparty_summary.csv", summaries,
-        ["batch_id", "valuation_date", "counterparty_code", "counterparty_name", "currency", "trade_count", "pv_t0", "cva", "cva_adjusted_pv"])
+        ["batch_id", "valuation_date", "counterparty_code", "counterparty_name", "currency", "trade_count", "pv_t0", "cva", "cva_adj", "cva_adjusted_pv"])
     fields = {
         "trade_pv": ["trade_id", "ma_id", "counterparty_code", "pv"],
         "exposures": ["ma_id", "date", "counterparty_code", "currency", "expected_positive_exposure", "discount_factor", "survival_probability", "cva_increment"],
@@ -89,20 +89,22 @@ def generate_reports(publication_path):
         outputs[key] = write_csv(directory / f"{key}.csv", [{**prefix, **{column: r[column] for column in columns}} for r in results[key]], ["batch_id", "valuation_date", *columns])
     total_pv = sum(r["pv"] for r in results["trade_pv"])
     total_cva = sum(r["cva"] for r in results["counterparty_cva"])
+    total_cva_adj = sum(r["cva_adj"] for r in results["counterparty_cva"])
     summary = ["# XVA batch report", "", f"Batch: `{batch_id}`", "", f"Valuation date: {inputs['valuation_date']}",
                f"Currency: {inputs['reporting_currency']}", f"Model: `{snapshot['model_version']}`", "",
-               f"Clean PV t0: {total_pv:,.2f}", f"CVA (loss): {total_cva:,.2f}",
-               f"CVA-adjusted PV: {total_pv - total_cva:,.2f}", "",
-               "| Counterparty code | Name | Trades | PV t0 | CVA | Adjusted PV |",
-               "| --- | --- | ---: | ---: | ---: | ---: |"]
+               f"Clean PV t0: {total_pv:,.2f}", f"Calculated CVA (loss): {total_cva:,.2f}",
+               f"Adjusted CVA (loss): {total_cva_adj:,.2f}",
+               f"CVA-adjusted PV: {total_pv - total_cva_adj:,.2f}", "",
+               "| Counterparty code | Name | Trades | PV t0 | Calculated CVA | Adjusted CVA | Adjusted PV |",
+               "| --- | --- | ---: | ---: | ---: | ---: | ---: |"]
     for row in summaries:
         name = row["counterparty_name"].replace("|", "\\|").replace("\n", " ")
-        summary.append(f"| {row['counterparty_code']} | {name} | {row['trade_count']} | {row['pv_t0']:,.2f} | {row['cva']:,.2f} | {row['cva_adjusted_pv']:,.2f} |")
+        summary.append(f"| {row['counterparty_code']} | {name} | {row['trade_count']} | {row['pv_t0']:,.2f} | {row['cva']:,.2f} | {row['cva_adj']:,.2f} | {row['cva_adjusted_pv']:,.2f} |")
     summary.extend(["", "Exposure profiles are reported by MA; values from distinct MAs are not netted.",
                     "CVA uses independent default and exposure with the documented demo pricing model.", ""])
     outputs["summary"] = write_text(directory / "summary.md", "\n".join(summary))
     return write_json(directory / "report_manifest.json", {**prefix, "status": "reported", "report_version": REPORT_VERSION,
-                                                           "total_pv_t0": total_pv, "total_cva": total_cva, "outputs": outputs})
+                                                           "total_pv_t0": total_pv, "total_cva": total_cva, "total_cva_adj": total_cva_adj, "outputs": outputs})
 
 
 def main():

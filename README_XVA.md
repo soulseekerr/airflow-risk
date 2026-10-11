@@ -129,6 +129,12 @@ airflow dags unpause xva_inputs
 ```
 
 Manual input runs default to the sample file unless `input_path` is supplied.
+In the Airflow UI, trigger **`xva_inputs`** to start a new batch. You can leave
+its configuration empty to use the sample, or supply `input_path` to your EUR
+input file. Do not start a new batch by triggering `xva_calculations` with an
+empty configuration: its `validate_batch` task requires the frozen input
+identity and path supplied by `xva_inputs`.
+
 When the input schedule is enabled, `airflow dags trigger xva_inputs --conf ...`
 can also be used. Only `xva_inputs` has a schedule; calculations and reports
 use `schedule=None` and have `max_active_runs=1`.
@@ -145,9 +151,19 @@ To rerun calculations directly, pass `batch_id` and `snapshot_path` to
 `publication_path` to `xva_reports`, for example:
 
 ```bash
+airflow dags trigger xva_calculations --conf \
+  '{"batch_id":"<batch_id>","snapshot_path":"/absolute/path/to/xva/<batch_id>/inputs.json"}'
+
 airflow dags trigger xva_reports --conf \
   '{"batch_id":"<batch_id>","publication_path":"/absolute/path/to/xva/<batch_id>/published.json"}'
 ```
+
+If `validate_batch` reports missing `batch_id` and `snapshot_path`, inspect the
+failed run's configuration. Clearing tasks in that run preserves its configuration,
+so an empty configuration will fail again. Start `xva_inputs` for a fresh batch,
+or create a new calculation run with both values from `validate_and_freeze`'s
+`return_value` XCom. If the run was automatically triggered, compare its
+configuration with that XCom and check that all DAG files are up to date.
 
 Input and calculation errors fail immediately; publication allows two retries
 for storage failures. The original `xva_daily_batch` DAG has been replaced by
@@ -270,11 +286,11 @@ Artifacts are stored beneath `<output>/<batch_id>/`:
 | `results.json` | Trade PV, MA exposure profiles, MA CVA, and counterparty CVA |
 | `published.json` | Written after successful reconciliation and database publication |
 
-Reports are stored at `<output>/<batch_id>/reports/v1/`:
+Reports are stored at `<output>/<batch_id>/reports/v2/`; earlier `v1` reports remain available:
 
 | Report | Contents |
 | --- | --- |
-| `counterparty_summary.csv` | Counterparty name/code, trade count, signed PV t0, CVA, and PV minus CVA |
+| `counterparty_summary.csv` | Counterparty name/code, trade count, signed PV t0, calculated CVA (`cva`), adjusted CVA (`cva_adj`), and PV minus adjusted CVA |
 | `trade_pv.csv` | Trade-level PV and MA allocation |
 | `exposures.csv` | Dated expected positive exposure profiles and CVA increments by MA |
 | `netting_set_cva.csv` | CVA by MA/netting set |
@@ -288,7 +304,7 @@ checks the requested batch and reconciliation, and does not change results or
 recalculate. Repeated reporting replaces the same deterministic report files.
 
 The `airflow_xva` PostgreSQL schema contains `batches`, `trade_pv`, `exposures`,
-`netting_set_cva`, and `counterparty_cva` tables. **Output tables contain
+`netting_set_cva`, and `counterparty_xva` tables. **Output tables contain
 `valuation_date`, not `batch_id`.** Their primary keys are:
 
 | Table | Primary key |
@@ -296,7 +312,7 @@ The `airflow_xva` PostgreSQL schema contains `batches`, `trade_pv`, `exposures`,
 | `trade_pv` | `valuation_date`, `trade_id` |
 | `exposures` | `valuation_date`, `ma_id`, `exposure_date` |
 | `netting_set_cva` | `valuation_date`, `ma_id` |
-| `counterparty_cva` | `valuation_date`, `counterparty_code` |
+| `counterparty_xva` | `valuation_date`, `counterparty_code`, `xva_type` |
 
 `valuation_date` is the batch's as-of date. `exposure_date` is a future date on
 the exposure profile; both are retained on exposure rows. Query results directly
@@ -304,8 +320,40 @@ by valuation date, for example:
 
 ```sql
 SELECT * FROM airflow_xva.trade_pv WHERE valuation_date = DATE '2026-10-10';
-SELECT * FROM airflow_xva.counterparty_cva WHERE valuation_date = DATE '2026-10-10';
+SELECT * FROM airflow_xva.counterparty_xva WHERE valuation_date = DATE '2026-10-10';
 ```
+
+`counterparty_xva` stores generic counterparty XVA measures:
+
+| Column | Meaning |
+| --- | --- |
+| `valuation_date` | As-of date |
+| `counterparty_code` | Seven-character counterparty code |
+| `currency` | Result currency (currently EUR) |
+| `xva_type` | Measure name; this batch publishes `CVA`, with room for measures such as `DVA` and `FVA` |
+| `value_calc` | Calculated amount |
+| `value_adj` | Final amount including any manual adjustment; initially equals `value_calc` |
+| `updated_at` | PostgreSQL `TIMESTAMPTZ`, automatically stamped on insertion and every update |
+
+`value_adj` is the complete adjusted amount, rather than an adjustment delta.
+Rerunning the batch **resets CVA `value_adj` to the newly calculated `value_calc`**.
+Other XVA types are preserved when this CVA batch is republished. Values must be
+finite; generic measures can be signed. The current calculation still produces
+nonnegative CVA losses.
+
+For example, a manual adjustment needs no explicit timestamp update:
+
+```sql
+UPDATE airflow_xva.counterparty_xva
+SET value_adj = 1250.00
+WHERE valuation_date = DATE '2026-10-10'
+  AND counterparty_code = '0000001' AND xva_type = 'CVA';
+```
+
+Reports reconcile calculated CVA against the exposure results and publication
+manifest. They show both calculated and adjusted CVA, and use `value_adj` for
+PV minus CVA. Report regeneration picks up manual adjustments without
+recalculating the batch.
 
 `batches` retains `batch_id`, `valuation_date`, frozen inputs, and model metadata
 for every successful batch. Its `is_current` flag identifies which batch currently
@@ -320,8 +368,9 @@ The result database is separate from Airflow's metadata database, which can
 still use SQLite for local development.
 
 Batch identity is the valuation date plus a SHA-256 hash of the input data and
-model version. Publishing a batch replaces **all output rows for its valuation
-date** inside a single transaction, without adding duplicates. Results for other
+model version. Publishing a batch replaces its PV, exposure, netting-set CVA,
+and counterparty `CVA` rows **for its valuation date** inside a single transaction,
+without adding duplicates. Results for other
 dates are preserved. A transaction-scoped advisory
 lock serializes publications, including concurrent reruns and table bootstrap.
 A failed write rolls back the entire batch replacement, preserving previously
@@ -347,6 +396,15 @@ after verifying that all stored PV rows are EUR. Non-EUR rows block migration
 and remain unchanged; they need explicit FX conversion or archival first.
 The legacy archive retains its original currency column.
 
+The first publication renames the existing `counterparty_cva` table to
+`counterparty_xva` transactionally, preserving rows, adjustments, and timestamps.
+If both names exist, migration stops rather than overwriting either table.
+Existing counterparty `cva` columns migrate to `value_calc`, with `xva_type='CVA'`
+and `value_adj=value_calc`. Previously batch-keyed counterparty rows are copied
+from the archive with the same defaults. Existing amounts are preserved;
+`updated_at` starts at migration time because the old schema has no write timestamp.
+This migration runs during publication and is repeatable.
+
 Dates with exactly one historical batch are copied to the new tables automatically.
 For dates with several historical batches, the old schema has no publication
 timestamp from which to infer a winner. All old rows remain in the archive;
@@ -367,6 +425,8 @@ scenarios, controlled CVA examples, invalid allocations, artifact mismatches,
 reconciliation failures, and repeatable PostgreSQL publication. Database tests
 also verify real transaction rollback, read-only enforcement, concurrent reruns,
 valuation-date replacement, preservation of other dates, and archival migration.
+They also cover generic XVA keys, adjustment defaults and resets, manual-edit
+timestamps, signed measures, and calculated versus adjusted reporting.
 Workflow tests check
 scheduled feed dates, cross-DAG batch identities, isolated report reruns,
 read-only report generation, and rejection of superseded batches. DAG tests

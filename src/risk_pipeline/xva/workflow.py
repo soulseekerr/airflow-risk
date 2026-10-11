@@ -33,7 +33,12 @@ def prepare_inputs(configuration, repository, scheduled_date=None):
 
 def require_snapshot(configuration):
     if not configuration.get("batch_id") or not configuration.get("snapshot_path"):
-        raise ValueError("Calculation run requires batch_id and snapshot_path")
+        raise ValueError(
+            "Calculation run requires batch_id and snapshot_path in dag_run.conf. "
+            "For a new batch, trigger xva_inputs; it freezes the inputs and passes "
+            "both values automatically. To rerun an existing batch, trigger "
+            "xva_calculations with the original batch_id and snapshot_path."
+        )
     path = str(Path(configuration["snapshot_path"]).resolve())
     snapshot = load_snapshot(path)
     if configuration["batch_id"] != snapshot["batch_id"]:

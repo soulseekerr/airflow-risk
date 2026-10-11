@@ -104,7 +104,7 @@ def test_scheduled_input_feed_and_date_validation(source, tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("configuration", [{}, {"batch_id": "one"}, {"snapshot_path": "file"}])
 def test_calculation_requires_complete_handoff(configuration):
-    with pytest.raises(ValueError, match="requires"):
+    with pytest.raises(ValueError, match="requires.*dag_run.conf.*trigger xva_inputs"):
         require_snapshot(configuration)
 
 

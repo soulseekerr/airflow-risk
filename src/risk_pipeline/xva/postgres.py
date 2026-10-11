@@ -54,10 +54,14 @@ CREATE TABLE IF NOT EXISTS airflow_xva.netting_set_cva (
  currency VARCHAR(3) NOT NULL, cva DOUBLE PRECISION NOT NULL CHECK (cva >= 0),
  PRIMARY KEY (valuation_date, ma_id)
 );
-CREATE TABLE IF NOT EXISTS airflow_xva.counterparty_cva (
+CREATE TABLE IF NOT EXISTS airflow_xva.counterparty_xva (
  valuation_date DATE NOT NULL,
  counterparty_code VARCHAR(7) NOT NULL, currency VARCHAR(3) NOT NULL,
- cva DOUBLE PRECISION NOT NULL CHECK (cva >= 0), PRIMARY KEY (valuation_date, counterparty_code)
+ xva_type TEXT NOT NULL CHECK (length(trim(xva_type)) > 0),
+ value_calc DOUBLE PRECISION NOT NULL CHECK (value_calc > '-Infinity'::float8 AND value_calc < 'Infinity'::float8),
+ value_adj DOUBLE PRECISION NOT NULL CHECK (value_adj > '-Infinity'::float8 AND value_adj < 'Infinity'::float8),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+ PRIMARY KEY (valuation_date, counterparty_code, xva_type)
 );
 """
 
@@ -66,12 +70,54 @@ OUTPUT_COLUMNS = {
     "trade_pv": "trade_id, ma_id, counterparty_code, pv",
     "exposures": "ma_id, exposure_date, counterparty_code, currency, expected_positive_exposure, discount_factor, survival_probability, cva_increment",
     "netting_set_cva": "ma_id, counterparty_code, currency, cva",
-    "counterparty_cva": "counterparty_code, currency, cva",
+    "counterparty_xva": "counterparty_code, currency, xva_type, value_calc, value_adj",
 }
+
+
+def ensure_counterparty_xva(cursor):
+    """Upgrade date-keyed CVA and stamp every insert or manual update."""
+    cursor.execute("""SELECT 1 FROM information_schema.columns
+                      WHERE table_schema='airflow_xva' AND table_name='counterparty_xva'
+                        AND column_name='cva'""")
+    if cursor.fetchone() is not None:
+        cursor.execute("""
+            ALTER TABLE airflow_xva.counterparty_xva RENAME COLUMN cva TO value_calc;
+            ALTER TABLE airflow_xva.counterparty_xva DROP CONSTRAINT IF EXISTS counterparty_cva_cva_check;
+            ALTER TABLE airflow_xva.counterparty_xva DROP CONSTRAINT IF EXISTS counterparty_xva_cva_check;
+            ALTER TABLE airflow_xva.counterparty_xva ADD COLUMN xva_type TEXT NOT NULL DEFAULT 'CVA';
+            ALTER TABLE airflow_xva.counterparty_xva ADD COLUMN value_adj DOUBLE PRECISION;
+            UPDATE airflow_xva.counterparty_xva SET value_adj=value_calc;
+            ALTER TABLE airflow_xva.counterparty_xva ALTER COLUMN value_adj SET NOT NULL;
+            ALTER TABLE airflow_xva.counterparty_xva ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp();
+            ALTER TABLE airflow_xva.counterparty_xva DROP CONSTRAINT IF EXISTS counterparty_cva_pkey;
+            ALTER TABLE airflow_xva.counterparty_xva DROP CONSTRAINT IF EXISTS counterparty_xva_pkey;
+            ALTER TABLE airflow_xva.counterparty_xva ADD PRIMARY KEY (valuation_date, counterparty_code, xva_type);
+            ALTER TABLE airflow_xva.counterparty_xva ADD CHECK (length(trim(xva_type)) > 0);
+            ALTER TABLE airflow_xva.counterparty_xva ADD CHECK (value_calc > '-Infinity'::float8 AND value_calc < 'Infinity'::float8);
+            ALTER TABLE airflow_xva.counterparty_xva ADD CHECK (value_adj > '-Infinity'::float8 AND value_adj < 'Infinity'::float8);
+        """)
+    cursor.execute("""
+        CREATE OR REPLACE FUNCTION airflow_xva.stamp_counterparty_xva() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.value_adj IS NULL THEN NEW.value_adj := NEW.value_calc; END IF;
+            NEW.updated_at := clock_timestamp();
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE OR REPLACE TRIGGER stamp_counterparty_xva
+        BEFORE INSERT OR UPDATE ON airflow_xva.counterparty_xva
+        FOR EACH ROW EXECUTE FUNCTION airflow_xva.stamp_counterparty_xva();
+    """)
 
 
 def ensure_schema(cursor):
     """Archive the old tables and migrate dates with an unambiguous batch."""
+    cursor.execute("SELECT to_regclass('airflow_xva.counterparty_cva'), to_regclass('airflow_xva.counterparty_xva')")
+    old_table, new_table = cursor.fetchone()
+    if old_table is not None:
+        if new_table is not None:
+            raise ValueError("Both counterparty_cva and counterparty_xva exist; reconcile them before publication")
+        cursor.execute("ALTER TABLE airflow_xva.counterparty_cva RENAME TO counterparty_xva")
     cursor.execute("""SELECT 1 FROM information_schema.columns
                       WHERE table_schema = 'airflow_xva' AND table_name = 'trade_pv'
                         AND column_name = 'currency'""")
@@ -82,7 +128,7 @@ def ensure_schema(cursor):
     cursor.execute("""
         SELECT table_name FROM information_schema.columns
         WHERE table_schema = 'airflow_xva' AND column_name = 'batch_id'
-          AND table_name IN ('trade_pv', 'exposures', 'netting_set_cva', 'counterparty_cva')
+          AND table_name IN ('trade_pv', 'exposures', 'netting_set_cva', 'counterparty_xva')
     """)
     legacy_tables = {row[0] for row in cursor.fetchall()}
     if legacy_tables:
@@ -97,6 +143,7 @@ def ensure_schema(cursor):
             cursor.execute(f"ALTER TABLE airflow_xva.{table} SET SCHEMA airflow_xva_batch_archive")
     cursor.execute(SCHEMA)
     cursor.execute("ALTER TABLE airflow_xva.trade_pv DROP COLUMN IF EXISTS currency")
+    ensure_counterparty_xva(cursor)
     if legacy_tables:
         # Multiple old batches for one date have no recorded chronology. Keep
         # them archived; a deliberate republication selects the current batch.
@@ -107,6 +154,8 @@ def ensure_schema(cursor):
         """)
         for table, columns in OUTPUT_COLUMNS.items():
             qualified = ", ".join(f"t.{column.strip()}" for column in columns.split(","))
+            if table == "counterparty_xva":
+                qualified = "t.counterparty_code, t.currency, 'CVA', t.cva, t.cva"
             cursor.execute(f"""
                 INSERT INTO airflow_xva.{table} (valuation_date, {columns})
                 SELECT b.valuation_date, {qualified}
