@@ -40,13 +40,18 @@ def write_text(path, payload):
 
 def freeze_inputs(input_path, output_root):
     """Validate inputs, derive their content-based batch ID, and write the frozen snapshot."""
-    inputs = validate(read_json(input_path))
+    snapshot = build_snapshot(read_json(input_path))
+    return write_json(Path(output_root).resolve() / snapshot["batch_id"] / "inputs.json", snapshot)
+
+
+def build_snapshot(inputs):
+    """Validate an input payload and return its deterministic snapshot without writing files."""
+    inputs = validate(inputs)
     snapshot = {"model_version": MODEL_VERSION, "inputs": inputs}
     digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True, allow_nan=False).encode()).hexdigest()
     batch_id = f"{inputs['valuation_date']}-{digest}"
-    directory = Path(output_root).resolve() / batch_id
     snapshot["batch_id"] = batch_id
-    return write_json(directory / "inputs.json", snapshot)
+    return snapshot
 
 
 def load_snapshot(path):
@@ -128,8 +133,14 @@ def publish(snapshot_path, result_path, connection_id=DEFAULT_CONNECTION_ID):
 
 
 def run_batch(input_path, output_root, connection_id=DEFAULT_CONNECTION_ID):
-    """Freeze inputs, simulate, value, and publish a batch; return the publication manifest path."""
-    snapshot = freeze_inputs(input_path, output_root)
+    """Ingest raw inputs, validate and freeze the selected portfolio, then calculate and publish results."""
+    from risk_pipeline.xva.workflow import ingest_inputs
+    from risk_pipeline.xva.ingestion import validate_ingestion
+
+    ingestion = ingest_inputs({"input_path": str(Path(input_path).expanduser().resolve()),
+                               "output_root": str(Path(output_root).expanduser().resolve())},
+                              Path.cwd(), connection_id=connection_id)
+    snapshot = validate_ingestion(ingestion)["snapshot_path"]
     scenarios = simulate(snapshot)
     results = value_batch(snapshot, scenarios)
     return publish(snapshot, results, connection_id)

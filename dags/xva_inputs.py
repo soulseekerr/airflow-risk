@@ -7,7 +7,8 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 from airflow.sdk import dag, get_current_context, task
 from airflow.timetables.interval import CronDataIntervalTimetable
 
-from risk_pipeline.xva.workflow import prepare_inputs
+from risk_pipeline.xva.workflow import ingest_inputs
+from risk_pipeline.xva.ingestion import validate_ingestion
 
 
 @dag(
@@ -23,17 +24,23 @@ from risk_pipeline.xva.workflow import prepare_inputs
 def xva_inputs():
     """Build the daily input DAG that freezes a batch and triggers its calculation run."""
     @task
-    def validate_and_freeze():
-        """Resolve the run configuration, validate scheduled valuation dates, and return the frozen handoff."""
+    def ingest_raw_inputs():
+        """Commit raw submissions to PostgreSQL before business validation, preserving retry identity."""
         context = get_current_context()
         run = context["dag_run"]
         run_type = getattr(run.run_type, "value", run.run_type)
         scheduled_date = None
         if run_type in ("scheduled", "backfill"):
             scheduled_date = context["data_interval_start"].in_timezone("Europe/London").date().isoformat()
-        return prepare_inputs(run.conf or {}, Path(__file__).resolve().parents[1], scheduled_date)
+        return ingest_inputs(run.conf or {}, Path(__file__).resolve().parents[1], scheduled_date,
+                             request_key=f"{context['dag'].dag_id}:{run.run_id}")
 
-    frozen = validate_and_freeze()
+    @task
+    def validate_and_freeze(ingestion):
+        """Record accepted/rejected outcomes and freeze the selected database snapshot for calculations."""
+        return validate_ingestion(ingestion)
+
+    frozen = validate_and_freeze(ingest_raw_inputs())
     TriggerDagRunOperator(
         task_id="trigger_calculations",
         trigger_dag_id="xva_calculations",

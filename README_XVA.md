@@ -63,12 +63,12 @@ resolves metadata-stored connections through its execution API.
 
 | DAG | Schedule | Tasks |
 | --- | --- | --- |
-| `xva_inputs` | Daily, initially paused | Validate/freeze inputs, trigger calculations |
+| `xva_inputs` | Daily, initially paused | Ingest raw inputs in PostgreSQL, validate/freeze, trigger calculations |
 | `xva_calculations` | Triggered only | Validate batch identity, simulate, calculate, publish, trigger reports |
 | `xva_reports` | Triggered only | Validate published batch, generate reports |
 
 ```text
-xva_inputs: validate_and_freeze → trigger_calculations
+xva_inputs: ingest_raw_inputs → validate_and_freeze → trigger_calculations
                                          ↓
 xva_calculations: validate_batch → generate_market_scenarios
                                          ↓
@@ -165,9 +165,107 @@ or create a new calculation run with both values from `validate_and_freeze`'s
 `return_value` XCom. If the run was automatically triggered, compare its
 configuration with that XCom and check that all DAG files are up to date.
 
-Input and calculation errors fail immediately; publication allows two retries
+An entirely rejected ingestion fails validation after recording its rejection
+reasons. An ingestion with some rejected submissions can still proceed with its
+selected accepted portfolio. Calculation errors fail immediately; publication allows two retries
 for storage failures. The original `xva_daily_batch` DAG has been replaced by
 these three DAGs.
+
+## Database input intake and generated submissions
+
+The Airflow input DAG and standalone batch command now store submissions in
+`airflow_xva.input_submissions` through `risk_postgres` **before business validation**.
+The example file is a source/template, rather than the authoritative input store.
+Validation reads the database records; changing the original source file after
+ingestion does not change that ingestion's inputs.
+
+Each submission is a **complete portfolio**. A file can contain one portfolio or
+an envelope of alternatives: `{"submissions": [<portfolio>, <portfolio>, ...]}`.
+For this demo, the **last accepted submission in source order** is selected for
+calculation. Other accepted submissions remain available in the database but are
+not calculated automatically. They are not merged as incremental trade updates.
+
+| Stored field | Purpose |
+| --- | --- |
+| `submission_id`, `ingestion_id`, `submission_index` | Submission identity, group, and source ordering |
+| `request_key`, `source`, `received_at` | Airflow run reference, file/generator provenance, and ingestion timestamp |
+| `raw_text`, `raw_payload` | Submitted JSON text and parsed JSONB; malformed JSON retains text with a null parsed payload |
+| `status`, `validation_errors`, `validated_at` | `pending`, `accepted`, or `rejected`, with recorded errors and validation timestamp |
+| `valuation_date`, `batch_id`, `validated_snapshot` | Typed valuation date and frozen validated snapshot for accepted submissions |
+| `selected_for_calculation`, `snapshot_path` | Selected portfolio and its shared calculation artifact path |
+
+Raw ingestion commits before the validation task starts. Accepted snapshots are
+saved in PostgreSQL before results are calculated. The selected snapshot is also
+written to the usual `<output>/<batch_id>/inputs.json` so calculation tasks and
+the VS Code replay command continue to work. `batches` retains successful result
+publication metadata as before. Rejected submissions never trigger calculations.
+If all submissions are rejected, the task fails **after** rejection records commit.
+
+Clearing/retrying ingestion in the same Airflow run reuses its submission records.
+Changing the source contents during that retry is rejected; submit corrected data
+in a new run to preserve the original history. Retrying validation preserves its
+recorded outcomes and can recreate a missing selected snapshot artifact from
+the database. A manual input run can reuse stored records with
+`{"ingestion_id":"<ingestion_id>"}` without the original source file.
+
+### Generate noisy demo inputs with deliberate rejections
+
+Trigger `xva_inputs` with this configuration in the Airflow UI:
+
+```json
+{
+  "generate_demo": true,
+  "valuation_date": "2026-10-11",
+  "generation": {
+    "count": 8,
+    "seed": 42,
+    "noise": 0.1,
+    "rejection_rate": 0.25
+  }
+}
+```
+
+For the supplied template this produces **six accepted and two rejected portfolios**,
+then calculates the last accepted one. Ordinary noise varies rates, notionals,
+recovery rates, credit survival probabilities, and CSA thresholds within valid
+bounds. Deliberate faults create predictable rejects: invalid counterparty codes,
+out-of-range recovery rates, negative notionals, unknown MAs, invalid survival
+probabilities, or unsupported trade currencies. Validation checks actual payloads;
+it does not accept/reject them based on a generator label.
+
+`noise` must be between 0 and 0.5. `rejection_rate` is between 0 and 1; the rejected
+count is `count * rejection_rate`, rounded to the nearest integer with halves up.
+The seed makes the generated data repeatable; change it for another sample.
+Market parameters and simulation seeds also vary across portfolios. An all-rejected
+generation is permitted and intentionally fails validation while preserving its audit trail.
+Manual generation uses the sample date unless `valuation_date` is supplied.
+Scheduled generation shifts the template to the daily interval start date, including
+credit-curve points and trade dates. Generation is opt-in; normal file ingestion remains available.
+
+You can also generate a file before ingestion:
+
+```bash
+python -m risk_pipeline.xva.generation --output /tmp/xva-submissions.json \
+  --count 8 --seed 42 --noise 0.1 --rejection-rate 0.25 --valuation-date 2026-10-11
+airflow dags trigger xva_inputs --conf '{"input_path":"/tmp/xva-submissions.json"}'
+```
+
+Inspect outcomes and individual errors with:
+
+```sql
+SELECT ingestion_id, status, COUNT(*)
+FROM airflow_xva.input_submissions
+GROUP BY ingestion_id, status;
+
+SELECT submission_id, request_key, source, received_at, validation_errors
+FROM airflow_xva.input_submissions
+WHERE status = 'rejected'
+ORDER BY received_at DESC, submission_index;
+
+SELECT valuation_date, batch_id, validated_snapshot
+FROM airflow_xva.input_submissions
+WHERE status = 'accepted' AND selected_for_calculation;
+```
 
 ## Input contract
 
@@ -310,7 +408,8 @@ repeatable-read, read-only transaction,
 checks the requested batch and reconciliation, and does not change results or
 recalculate. Repeated reporting replaces the same deterministic report files.
 
-The `airflow_xva` PostgreSQL schema contains `batches`, `trade_pv`, `exposures`,
+The `airflow_xva` PostgreSQL schema contains `input_submissions` for input audit
+and accepted snapshots, plus `batches`, `trade_pv`, `exposures`,
 `netting_set_cva`, and `counterparty_xva` tables. **Output tables contain
 `valuation_date`, not `batch_id`.** Their primary keys are:
 
@@ -468,6 +567,9 @@ also verify real transaction rollback, read-only enforcement, concurrent reruns,
 valuation-date replacement, preservation of other dates, and archival migration.
 They also cover generic XVA keys, adjustment defaults and resets, manual-edit
 timestamps, signed measures, and calculated versus adjusted reporting.
+Input tests verify commit-before-validation, durable rejection reasons, exact
+seeded rejection counts, coherent generated dates, immutable ingestion retries,
+database-based freezing, and missing-artifact recovery.
 Workflow tests check
 scheduled feed dates, cross-DAG batch identities, isolated report reruns,
 read-only report generation, and rejection of superseded batches. DAG tests

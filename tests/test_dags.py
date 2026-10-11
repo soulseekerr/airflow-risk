@@ -64,7 +64,8 @@ def test_xva_dag_chain_and_dependencies():
     reports = dag_bag.dags["xva_reports"]
     assert isinstance(inputs.schedule, CronDataIntervalTimetable)
     assert calculations.schedule is None and reports.schedule is None
-    assert set(inputs.task_ids) == {"validate_and_freeze", "trigger_calculations"}
+    assert set(inputs.task_ids) == {"ingest_raw_inputs", "validate_and_freeze", "trigger_calculations"}
+    assert inputs.get_task("validate_and_freeze").upstream_task_ids == {"ingest_raw_inputs"}
     assert set(calculations.task_ids) == {"validate_batch", "generate_market_scenarios",
                                           "calculate_pv_exposure_cva", "reconcile_and_publish", "trigger_reports"}
     assert set(reports.task_ids) == {"validate_published_batch", "create_reports"}
