@@ -21,22 +21,27 @@ def load_published_results(publication_path):
     if manifest.get("storage") != "postgres" or not manifest.get("connection_id"):
         raise ValueError("Reports require a PostgreSQL publication; republish old SQLite batches")
     with transaction(manifest["connection_id"], readonly=True) as cursor:
-        cursor.execute("SELECT input_snapshot FROM airflow_xva.batches WHERE batch_id = %s", (manifest["batch_id"],))
+        cursor.execute("SELECT input_snapshot, is_current FROM airflow_xva.batches WHERE batch_id = %s", (manifest["batch_id"],))
         row = cursor.fetchone()
         if row is None:
             raise ValueError("Published batch is missing from the results database")
+        if not row[1]:
+            raise ValueError("Batch is no longer current for its valuation date; report the current published batch")
         snapshot = validate_snapshot(row[0])
         if snapshot["batch_id"] != manifest["batch_id"]:
             raise ValueError("Database snapshot belongs to another batch")
+        valuation_date = snapshot["inputs"]["valuation_date"]
+        if manifest.get("valuation_date", valuation_date) != valuation_date:
+            raise ValueError("Publication valuation date does not match its batch")
         queries = {
-            "trade_pv": "SELECT trade_id, ma_id, counterparty_code, currency, pv FROM airflow_xva.trade_pv WHERE batch_id = %s ORDER BY trade_id",
-            "exposures": "SELECT ma_id, exposure_date AS date, counterparty_code, currency, expected_positive_exposure, discount_factor, survival_probability, cva_increment FROM airflow_xva.exposures WHERE batch_id = %s ORDER BY ma_id, exposure_date",
-            "netting_set_cva": "SELECT ma_id, counterparty_code, currency, cva FROM airflow_xva.netting_set_cva WHERE batch_id = %s ORDER BY ma_id",
-            "counterparty_cva": "SELECT counterparty_code, currency, cva FROM airflow_xva.counterparty_cva WHERE batch_id = %s ORDER BY counterparty_code",
+            "trade_pv": "SELECT trade_id, ma_id, counterparty_code, 'EUR' AS currency, pv FROM airflow_xva.trade_pv WHERE valuation_date = %s ORDER BY trade_id",
+            "exposures": "SELECT ma_id, exposure_date AS date, counterparty_code, currency, expected_positive_exposure, discount_factor, survival_probability, cva_increment FROM airflow_xva.exposures WHERE valuation_date = %s ORDER BY ma_id, exposure_date",
+            "netting_set_cva": "SELECT ma_id, counterparty_code, currency, cva FROM airflow_xva.netting_set_cva WHERE valuation_date = %s ORDER BY ma_id",
+            "counterparty_cva": "SELECT counterparty_code, currency, cva FROM airflow_xva.counterparty_cva WHERE valuation_date = %s ORDER BY counterparty_code",
         }
         results = {}
         for key, query in queries.items():
-            cursor.execute(query, (manifest["batch_id"],))
+            cursor.execute(query, (valuation_date,))
             columns = [column[0] for column in cursor.description]
             results[key] = [dict(zip(columns, row)) for row in cursor.fetchall()]
         for exposure in results["exposures"]:
@@ -76,12 +81,12 @@ def generate_reports(publication_path):
     outputs["counterparty_summary"] = write_csv(directory / "counterparty_summary.csv", summaries,
         ["batch_id", "valuation_date", "counterparty_code", "counterparty_name", "currency", "trade_count", "pv_t0", "cva", "cva_adjusted_pv"])
     fields = {
-        "trade_pv": ["trade_id", "ma_id", "counterparty_code", "currency", "pv"],
+        "trade_pv": ["trade_id", "ma_id", "counterparty_code", "pv"],
         "exposures": ["ma_id", "date", "counterparty_code", "currency", "expected_positive_exposure", "discount_factor", "survival_probability", "cva_increment"],
         "netting_set_cva": ["ma_id", "counterparty_code", "currency", "cva"],
     }
     for key, columns in fields.items():
-        outputs[key] = write_csv(directory / f"{key}.csv", [{**prefix, **r} for r in results[key]], ["batch_id", "valuation_date", *columns])
+        outputs[key] = write_csv(directory / f"{key}.csv", [{**prefix, **{column: r[column] for column in columns}} for r in results[key]], ["batch_id", "valuation_date", *columns])
     total_pv = sum(r["pv"] for r in results["trade_pv"])
     total_cva = sum(r["cva"] for r in results["counterparty_cva"])
     summary = ["# XVA batch report", "", f"Batch: `{batch_id}`", "", f"Valuation date: {inputs['valuation_date']}",

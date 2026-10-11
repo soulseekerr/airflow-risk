@@ -18,6 +18,14 @@ def inputs():
     return value
 
 
+def test_reporting_currency_must_be_eur_even_for_single_currency_inputs(inputs):
+    inputs["reporting_currency"] = "USD"
+    for row in inputs["trades"] + inputs["csas"]:
+        row["currency"] = "USD"
+    with pytest.raises(ValueError, match="must be EUR"):
+        validate(inputs)
+
+
 def test_swap_pv_direction_par_zero_rate_and_expiry(inputs):
     trade = inputs["trades"][0]
     as_of = date(2026, 10, 10)

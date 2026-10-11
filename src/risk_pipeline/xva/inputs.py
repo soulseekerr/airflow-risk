@@ -49,6 +49,8 @@ def validate(inputs):
     currency = identifier(inputs["reporting_currency"], "reporting_currency")
     if len(currency) != 3 or not currency.isalpha() or not currency.isupper():
         raise ValueError("reporting_currency must be a three-letter uppercase code")
+    if currency != "EUR":
+        raise ValueError("reporting_currency must be EUR; FX conversion is not supported")
     market = inputs["market"]
     number(market["flat_rate"], "flat_rate", -0.1, 1)
     number(market["rate_volatility"], "rate_volatility", 0, 0.1)

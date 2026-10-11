@@ -7,7 +7,7 @@ netting-set expected positive exposure; store unilateral CVA; and generate
 reports for the exact published batch.
 
 This first version is an educational model, with synthetic interest rate swaps
-in a single currency. Results are stored in PostgreSQL through the same
+in EUR. Results are stored in PostgreSQL through the same
 `risk_postgres` Airflow connection used by `xcom_demo`.
 
 ## PostgreSQL connection
@@ -39,7 +39,7 @@ python -m risk_pipeline.xva.batch \
 The command validates and freezes inputs, generates daily scenarios, calculates
 the results, reconciles CVA totals, and publishes to PostgreSQL. It prints a manifest
 with the batch ID, connection ID, trade count, netting-set count, and total
-CVA. All results are in the reporting currency. Generate reports separately
+CVA. All results are in EUR. Generate reports separately
 using the `published.json` path for that batch:
 
 ```bash
@@ -175,6 +175,10 @@ Rates, volatility, recovery, and survival probabilities are decimals, e.g.
 annual absolute rate volatility, e.g. `0.01` means one percentage point.
 All dates use ISO `YYYY-MM-DD` format.
 
+`reporting_currency` must be `EUR`. Trade and CSA currencies must also be
+EUR; this model does not yet support FX conversion. Trade PV is always in
+EUR, so `trade_pv` and `trade_pv.csv` omit the currency column.
+
 The current trade type is `interest_rate_swap`, with `pay_fixed` or
 `receive_fixed` direction. Only swaps that have already started and mature
 after the valuation date are accepted. A trade's counterparty and CSA must
@@ -284,23 +288,72 @@ checks the requested batch and reconciliation, and does not change results or
 recalculate. Repeated reporting replaces the same deterministic report files.
 
 The `airflow_xva` PostgreSQL schema contains `batches`, `trade_pv`, `exposures`,
-`netting_set_cva`, and `counterparty_cva` tables. Dates are stored as PostgreSQL
-`DATE`, the frozen inputs as `JSONB`, and counterparty codes as strings.
+`netting_set_cva`, and `counterparty_cva` tables. **Output tables contain
+`valuation_date`, not `batch_id`.** Their primary keys are:
+
+| Table | Primary key |
+| --- | --- |
+| `trade_pv` | `valuation_date`, `trade_id` |
+| `exposures` | `valuation_date`, `ma_id`, `exposure_date` |
+| `netting_set_cva` | `valuation_date`, `ma_id` |
+| `counterparty_cva` | `valuation_date`, `counterparty_code` |
+
+`valuation_date` is the batch's as-of date. `exposure_date` is a future date on
+the exposure profile; both are retained on exposure rows. Query results directly
+by valuation date, for example:
+
+```sql
+SELECT * FROM airflow_xva.trade_pv WHERE valuation_date = DATE '2026-10-10';
+SELECT * FROM airflow_xva.counterparty_cva WHERE valuation_date = DATE '2026-10-10';
+```
+
+`batches` retains `batch_id`, `valuation_date`, frozen inputs, and model metadata
+for every successful batch. Its `is_current` flag identifies which batch currently
+owns the published outputs for a date; a unique partial index permits at most
+one current batch per valuation date.
+
+Dates are stored as PostgreSQL `DATE`, the frozen inputs as `JSONB`, and
+counterparty codes as strings.
 Exposure rows retain the
 discount factor, survival probability, and CVA increment for reconciliation.
 The result database is separate from Airflow's metadata database, which can
 still use SQLite for local development.
 
 Batch identity is the valuation date plus a SHA-256 hash of the input data and
-model version. Repeating identical inputs replaces that batch's rows inside a
-single transaction, without adding duplicates. A transaction-scoped advisory
+model version. Publishing a batch replaces **all output rows for its valuation
+date** inside a single transaction, without adding duplicates. Results for other
+dates are preserved. A transaction-scoped advisory
 lock serializes publications, including concurrent reruns and table bootstrap.
 A failed write rolls back the entire batch replacement, preserving previously
-published results. Different inputs, seeds, or
-model versions produce separate batches. Bump `MODEL_VERSION` whenever the
+published results and the previous date's current-batch marker. Different inputs,
+seeds, or model versions produce separate metadata records, but only the most
+recently published batch's outputs remain active for a given valuation date.
+Reports reject a superseded batch manifest rather than reading another batch's
+date-level results. Existing report files and per-batch calculation artifacts
+remain available. Bump `MODEL_VERSION` whenever the
 calculation methodology changes. Published batches are checked for finite PV,
 nonnegative exposure and CVA, required result coverage, and reconciliation of
 exposure increments to MA CVA and of MA CVA to counterparty CVA.
+
+### Migrating existing PostgreSQL tables
+
+The first publication after this update migrates the old batch-keyed output
+tables transactionally. It moves them intact to `airflow_xva_batch_archive`
+and creates the new valuation-date tables in `airflow_xva`. Batch metadata
+stays in `airflow_xva.batches`.
+
+Migration also removes `trade_pv.currency` from existing valuation-date tables
+after verifying that all stored PV rows are EUR. Non-EUR rows block migration
+and remain unchanged; they need explicit FX conversion or archival first.
+The legacy archive retains its original currency column.
+
+Dates with exactly one historical batch are copied to the new tables automatically.
+For dates with several historical batches, the old schema has no publication
+timestamp from which to infer a winner. All old rows remain in the archive;
+republish the selected frozen batch to establish that date's current outputs.
+The batch being published during migration becomes current for its own date.
+The migration refuses to overwrite an existing archive or guess at a partially
+modified schema. No archive tables are deleted by normal publication.
 
 ## Validation
 
@@ -312,18 +365,20 @@ Tests cover pricing signs, par and zero-rate cases, expiry, credit interpolation
 netting before the positive part, collateral thresholds and timing, deterministic
 scenarios, controlled CVA examples, invalid allocations, artifact mismatches,
 reconciliation failures, and repeatable PostgreSQL publication. Database tests
-also verify real transaction rollback, read-only enforcement, and concurrent
-reruns. Workflow tests check
+also verify real transaction rollback, read-only enforcement, concurrent reruns,
+valuation-date replacement, preservation of other dates, and archival migration.
+Workflow tests check
 scheduled feed dates, cross-DAG batch identities, isolated report reruns,
-read-only report generation, and selection of the requested batch when multiple
-batches exist. DAG tests check trigger targets and success dependencies as well
+read-only report generation, and rejection of superseded batches. DAG tests
+check trigger targets and success dependencies as well
 as the existing demo.
 
 CI starts an isolated PostgreSQL 17 service and runs the database integration
 tests. For local integration tests, configure an Airflow connection whose ID
 starts with `xva_test_` to a **disposable database whose name ends in `_test`**,
 then set `XVA_TEST_POSTGRES_CONN_ID` to that connection ID before running pytest.
-These tests drop and recreate the `airflow_xva` schema in the test database.
+These tests drop and recreate the `airflow_xva` and `airflow_xva_batch_archive`
+schemas in the test database.
 Without the test connection, database integration tests are explicitly skipped;
 calculation and DAG-structure tests still run. Never point this fixture at the
 normal `risk_postgres` database.

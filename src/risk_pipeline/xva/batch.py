@@ -9,7 +9,7 @@ import tempfile
 
 from risk_pipeline.xva.calculations import calculate, generate_scenarios, reconcile
 from risk_pipeline.xva.inputs import MODEL_VERSION, validate
-from risk_pipeline.xva.postgres import DEFAULT_CONNECTION_ID, SCHEMA, transaction
+from risk_pipeline.xva.postgres import DEFAULT_CONNECTION_ID, OUTPUT_COLUMNS, ensure_schema, transaction
 
 
 def read_json(path):
@@ -84,20 +84,28 @@ def publish(snapshot_path, result_path, connection_id=DEFAULT_CONNECTION_ID):
     with transaction(connection_id) as cursor:
         # Serialize bootstrap and publication, including simultaneous CLI reruns.
         cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ("airflow_xva_publication",))
-        cursor.execute(SCHEMA)
-        cursor.execute("DELETE FROM airflow_xva.batches WHERE batch_id = %s", (batch_id,))
-        cursor.execute("INSERT INTO airflow_xva.batches VALUES (%s, %s, %s, %s, %s::jsonb)",
+        ensure_schema(cursor)
+        valuation_date = inputs["valuation_date"]
+        for table in OUTPUT_COLUMNS:
+            cursor.execute(f"DELETE FROM airflow_xva.{table} WHERE valuation_date = %s", (valuation_date,))
+        cursor.execute("UPDATE airflow_xva.batches SET is_current = FALSE WHERE valuation_date = %s", (valuation_date,))
+        cursor.execute("""INSERT INTO airflow_xva.batches
+                           (batch_id, valuation_date, model_version, currency, input_snapshot, is_current)
+                           VALUES (%s, %s, %s, %s, %s::jsonb, TRUE)
+                           ON CONFLICT (batch_id) DO UPDATE SET is_current = TRUE""",
                            (batch_id, inputs["valuation_date"], MODEL_VERSION, inputs["reporting_currency"], json.dumps(snapshot, sort_keys=True)))
-        cursor.executemany("INSERT INTO airflow_xva.trade_pv VALUES (%s, %s, %s, %s, %s, %s)",
-                               [(batch_id, r["trade_id"], r["ma_id"], r["counterparty_code"], r["currency"], r["pv"]) for r in results["trade_pv"]])
+        cursor.executemany("""INSERT INTO airflow_xva.trade_pv
+                              (valuation_date, trade_id, ma_id, counterparty_code, pv)
+                              VALUES (%s, %s, %s, %s, %s)""",
+                               [(valuation_date, r["trade_id"], r["ma_id"], r["counterparty_code"], r["pv"]) for r in results["trade_pv"]])
         cursor.executemany("INSERT INTO airflow_xva.exposures VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                               [(batch_id, r["ma_id"], r["date"], r["counterparty_code"], r["currency"], r["expected_positive_exposure"],
+                               [(valuation_date, r["ma_id"], r["date"], r["counterparty_code"], r["currency"], r["expected_positive_exposure"],
                                  r["discount_factor"], r["survival_probability"], r["cva_increment"]) for r in results["exposures"]])
         cursor.executemany("INSERT INTO airflow_xva.netting_set_cva VALUES (%s, %s, %s, %s, %s)",
-                               [(batch_id, r["ma_id"], r["counterparty_code"], r["currency"], r["cva"]) for r in results["netting_set_cva"]])
+                               [(valuation_date, r["ma_id"], r["counterparty_code"], r["currency"], r["cva"]) for r in results["netting_set_cva"]])
         cursor.executemany("INSERT INTO airflow_xva.counterparty_cva VALUES (%s, %s, %s, %s)",
-                               [(batch_id, r["counterparty_code"], r["currency"], r["cva"]) for r in results["counterparty_cva"]])
-    manifest = {"batch_id": batch_id, "status": "published", "storage": "postgres", "connection_id": connection_id,
+                               [(valuation_date, r["counterparty_code"], r["currency"], r["cva"]) for r in results["counterparty_cva"]])
+    manifest = {"batch_id": batch_id, "valuation_date": valuation_date, "status": "published", "storage": "postgres", "connection_id": connection_id,
                 "trade_count": len(results["trade_pv"]), "netting_set_count": len(results["netting_set_cva"]),
                 "total_cva": sum(r["cva"] for r in results["counterparty_cva"])}
     return write_json(Path(snapshot_path).parent / "published.json", manifest)

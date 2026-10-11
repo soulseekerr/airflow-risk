@@ -157,12 +157,14 @@ def test_reports_reproduce_published_results_without_calculation(publication, mo
     assert (Path(publication).parent / "results.json").read_bytes() == results_before
 
 
-def test_reports_select_only_requested_batch(publication, source, tmp_path, pg_connection):
+def test_reports_reject_superseded_batch(publication, source, tmp_path, pg_connection):
+    first_snapshot, first = load_published_results(publication)
     inputs = read_json(source)
     inputs["simulation"]["seed"] += 1
     write_json(source, inputs)
     other = run_batch(source, tmp_path / "output", pg_connection)
-    first_snapshot, first = load_published_results(publication)
+    with pytest.raises(ValueError, match="no longer current"):
+        load_published_results(publication)
     second_snapshot, second = load_published_results(other)
     assert first_snapshot["batch_id"] != second_snapshot["batch_id"]
     assert len(first["trade_pv"]) == len(second["trade_pv"]) == 3
@@ -185,7 +187,7 @@ def test_unpublished_or_inconsistent_results_not_reported(publication, tmp_path,
         with transaction(pg_connection) as cursor:
             if change == "bad_exposure":
                 # Corrupt a valid nonnegative value so reconciliation still detects it.
-                cursor.execute("UPDATE airflow_xva.exposures SET cva_increment = cva_increment + 1 WHERE batch_id = %s", (manifest["batch_id"],))
+                cursor.execute("UPDATE airflow_xva.exposures SET cva_increment = cva_increment + 1 WHERE valuation_date = %s", (manifest["valuation_date"],))
             else:
                 snapshot = read_json(Path(publication).parent / "inputs.json")
                 # A valid snapshot for another seed/batch, stored under the old identity.

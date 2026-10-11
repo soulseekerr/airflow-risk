@@ -19,8 +19,10 @@ def pg_connection():
         if not cursor.fetchone()[0].endswith("_test"):
             pytest.fail("Integration database name must end in _test")
         cursor.execute("DROP SCHEMA IF EXISTS airflow_xva CASCADE")
+        cursor.execute("DROP SCHEMA IF EXISTS airflow_xva_batch_archive CASCADE")
     try:
         yield connection_id
     finally:
         with transaction(connection_id) as cursor:
             cursor.execute("DROP SCHEMA IF EXISTS airflow_xva CASCADE")
+            cursor.execute("DROP SCHEMA IF EXISTS airflow_xva_batch_archive CASCADE")
