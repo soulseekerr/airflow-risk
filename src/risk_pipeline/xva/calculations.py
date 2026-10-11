@@ -175,3 +175,39 @@ def reconcile(results, inputs=None):
         total = sum(p["cva"] for p in results["netting_set_cva"] if p["counterparty_code"] == row["counterparty_code"])
         if not math.isclose(total, row["cva"], abs_tol=1e-8, rel_tol=1e-10):
             raise ValueError("Counterparty CVA does not reconcile")
+
+
+def main():
+    """Replay a saved calculation, with optional in-memory debugging experiments."""
+    import argparse
+    import json
+    from pathlib import Path
+
+    from risk_pipeline.xva.batch import load_snapshot, read_json
+
+    parser = argparse.ArgumentParser(description="Replay saved XVA inputs and scenarios without publishing")
+    parser.add_argument("--batch-dir", required=True, help="Directory containing inputs.json and scenarios.json")
+    parser.add_argument("--interactive", action="store_true", help="Keep inputs in memory and allow repeated calculations")
+    args = parser.parse_args()
+    directory = Path(args.batch_dir).expanduser().resolve()
+    snapshot = load_snapshot(directory / "inputs.json")
+    scenario_payload = read_json(directory / "scenarios.json")
+    if scenario_payload["batch_id"] != snapshot["batch_id"]:
+        raise ValueError("Scenarios belong to another batch")
+    inputs, scenarios = snapshot["inputs"], scenario_payload["scenarios"]
+    while True:
+        results = calculate(inputs, scenarios)
+        print(json.dumps(results["counterparty_cva"] if args.interactive else results, indent=2, allow_nan=False))
+        if not args.interactive:
+            return
+        command = input("Enter: recalculate; r: regenerate scenarios and recalculate; q: quit > ").strip().lower()
+        while command not in ("", "r", "q"):
+            command = input("Use Enter, r, or q > ").strip().lower()
+        if command == "q":
+            return
+        if command == "r":
+            scenarios = generate_scenarios(inputs)
+
+
+if __name__ == "__main__":
+    main()

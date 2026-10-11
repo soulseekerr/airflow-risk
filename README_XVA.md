@@ -413,6 +413,40 @@ The batch being published during migration becomes current for its own date.
 The migration refuses to overwrite an existing archive or guess at a partially
 modified schema. No archive tables are deleted by normal publication.
 
+## Debugging a saved calculation in VS Code
+
+Select the Python interpreter used for this project, with the project installed
+(`python -m pip install -e .`) and its Airflow dependencies available. Set a
+breakpoint at the start of `calculate()` in
+`src/risk_pipeline/xva/calculations.py`. Choose **Replay saved XVA calculation**
+in Run and Debug, press **F5**, and enter the batch directory, for example
+`~/airflow/xva/<batch_id>`. The checked-in `.vscode/launch.json` contains settings
+and arguments only; the replay command lives in the calculation module.
+
+The debugger loads that batch's `inputs.json` and `scenarios.json` and calls
+`calculate()` with the original data. While paused, use the Debug Console to
+change an input before it is used, for example:
+
+```python
+inputs["trades"][0]["notional"] = 2_000_000
+```
+
+Continue execution. The integrated terminal prints counterparty CVA and prompts
+for the next action: **Enter** recalculates with the current in-memory inputs and
+scenarios, **r** regenerates scenarios and recalculates, and **q** exits. Each
+calculation stops at the breakpoint again. Use **r** after changing the market
+rate, volatility, seed, path count, valuation date, or maturity horizon. Keep
+related input fields consistent, including credit-curve dates and coverage.
+Restarting the debugger reloads the original files and discards in-memory edits.
+
+The command reads saved artifacts and prints results; it does not overwrite
+files, publish to PostgreSQL, or alter the completed Airflow run. To replay once
+from the terminal and print all calculation results:
+
+```bash
+python -m risk_pipeline.xva.calculations --batch-dir ~/airflow/xva/<batch_id>
+```
+
 ## Validation
 
 ```bash

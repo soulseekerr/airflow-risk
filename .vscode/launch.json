@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Replay saved XVA calculation",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "risk_pipeline.xva.calculations",
+      "args": ["--batch-dir", "${input:xvaBatchDirectory}", "--interactive"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "xvaBatchDirectory",
+      "type": "promptString",
+      "description": "Saved batch directory containing inputs.json and scenarios.json (e.g. ~/airflow/xva/<batch_id>)"
+    }
+  ]
+}
