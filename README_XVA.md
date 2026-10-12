@@ -63,6 +63,7 @@ resolves metadata-stored connections through its execution API.
 
 | DAG | Schedule | Tasks |
 | --- | --- | --- |
+| `xva_generate_inputs` | Triggered only | Generate a scalable synthetic portfolio as source feeds, trigger inputs |
 | `xva_feed_ingestion` | Triggered only | Stage one independently arriving source/feed |
 | `xva_inputs` | Daily, initially paused | Bind explicit feed versions, validate/freeze, trigger calculations |
 | `xva_calculations` | Triggered only | Validate batch identity, simulate, calculate, publish, trigger reports |
@@ -139,7 +140,7 @@ empty configuration: its `validate_batch` task requires the frozen input
 identity and path supplied by `xva_inputs`.
 
 When the input schedule is enabled, `airflow dags trigger xva_inputs --conf ...`
-can also be used. Only `xva_inputs` has a schedule. Individual feed ingestion,
+can also be used. Only `xva_inputs` has a schedule. Synthetic generation, individual feed ingestion,
 calculations, and reports use `schedule=None`; calculations and reports each
 have `max_active_runs=1`.
 
@@ -284,6 +285,72 @@ are split into individual entity feeds before validation. Existing old
 ID creates normalized feed versions for it and revalidates them; no historical
 input or output table is deleted.
 
+### Generate 2,000 counterparties and 10,000 trades
+
+`xva_generate_inputs` is an intermediate source-generation layer:
+
+```text
+xva_generate_inputs → xva_inputs → xva_calculations → xva_reports
+```
+
+It builds a synthetic portfolio from code instead of repeating the two-counterparty,
+three-trade example. By default it creates exactly **2,000 counterparties, 10,000
+trades, 2,000 credit curves, 2,000 MAs, and 1,400 CSAs**. Every counterparty has
+a unique seven-character code and at least one trade. Trade directions, notionals,
+fixed rates, allocations, recovery rates, credit hazards, collateral frequencies,
+lags, and thresholds vary reproducibly. One MA and one curve are created per
+counterparty; 70% of MAs are collateralized by default.
+
+Unpause `xva_inputs`, `xva_calculations`, and `xva_reports`, then trigger
+**`xva_generate_inputs`**. An empty configuration uses those sizes and the run's
+London calendar date. To make the parameters explicit, use:
+
+```json
+{
+  "valuation_date": "2026-10-12",
+  "generation": {
+    "counterparty_count": 2000,
+    "trade_count": 10000,
+    "seed": 42,
+    "noise": 0.1,
+    "horizon_days": 365,
+    "simulation_paths": 20,
+    "collateral_fraction": 0.7
+  }
+}
+```
+
+The generator writes six independent source files under
+`<output_root>/generated/<generation_id>/submission-000/`, then passes their
+paths to `xva_inputs`. Portfolio rows do not travel through XCom. Files and
+generation parameters are preserved for retries; changing parameters requires
+a new generation run. The same seed and valuation date produce the same data;
+change the seed for another sample. A retry can reproduce missing files.
+
+The synthetic default is a one-year horizon, 20 simulation paths, and monthly
+exposure reporting. Standard quarterly maturity buckets prevent thousands of
+different expiry dates from expanding the reporting grid to every day. Increasing
+path count or horizon increases the calculation workload. Sizes must be positive,
+and `trade_count` must be at least `counterparty_count`; codes support up to
+9,999,999 counterparties. Counts apply to this portfolio's feed versions; the
+database also retains earlier versions, so total table counts can be larger.
+
+The generation DAG produces one portfolio with no deliberately invalid submission
+by default. For several alternatives with rejected submissions, use the existing
+`generate_demo` mode below, optionally with the same size controls.
+
+To generate the source files directly without triggering Airflow:
+
+```bash
+python -m risk_pipeline.xva.generation --feed-directory /tmp/xva-large \
+  --counterparties 2000 --trades 10000 --seed 42 --valuation-date 2026-10-12 \
+  --simulation-paths 20 --horizon-days 365
+```
+
+When size flags are supplied, the CLI defaults to **one valid portfolio**. Its
+`submission-000/run_config.json` can also be used to trigger `xva_inputs` manually.
+Without size flags, the previous small-template defaults remain unchanged.
+
 ### Generate noisy demo inputs with deliberate rejections
 
 Trigger `xva_inputs` with this configuration in the Airflow UI:
@@ -309,6 +376,12 @@ bounds. Deliberate faults create predictable rejects: invalid counterparty codes
 out-of-range recovery rates, negative notionals, unknown MAs, invalid survival
 probabilities, or unsupported trade currencies. Validation checks actual payloads;
 it does not accept/reject them based on a generator label.
+
+Add `counterparty_count` and `trade_count` to `generation` to use synthetic
+portfolios of those sizes instead of the small template. With size controls,
+`generate_demo` defaults to one valid portfolio unless `count` and
+`rejection_rate` are explicitly supplied. For example, `count: 8` and
+`rejection_rate: 0.25` produce eight full-size alternatives with two rejects.
 
 `noise` must be between 0 and 0.5. `rejection_rate` is between 0 and 1; the rejected
 count is `count * rejection_rate`, rounded to the nearest integer with halves up.
@@ -660,6 +733,9 @@ Input tests verify commit-before-validation, durable row-level rejection reasons
 independent feed reuse, explicit date binding, thousands of trade rows, preserved
 legacy history, seeded rejection counts, immutable retries, interrupted-group
 recovery, and reconstruction from normalized database rows.
+Synthetic generation tests check exact 2,000/10,000 dimensions, consistent links,
+seeded variation, collateral coverage, and a complete full-size database workflow
+using a short horizon and one simulation path for test speed.
 Workflow tests check
 scheduled feed dates, cross-DAG batch identities, isolated report reruns,
 read-only report generation, and rejection of superseded batches. DAG tests

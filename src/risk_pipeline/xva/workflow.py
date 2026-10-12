@@ -2,13 +2,15 @@
 
 import os
 import json
+import uuid
 from pathlib import Path
 
-from risk_pipeline.xva.batch import freeze_inputs, load_snapshot, read_json
-from risk_pipeline.xva.generation import generate_submissions
+from risk_pipeline.xva.batch import freeze_inputs, load_snapshot, read_json, write_json
+from risk_pipeline.xva.generation import generate_submissions, write_feed_sets
 from risk_pipeline.xva.ingestion import ingest_submissions, parse_payload
 from risk_pipeline.xva.feeds import FIELDS, create_input_set, ingest_feed
 from risk_pipeline.xva.postgres import DEFAULT_CONNECTION_ID
+from risk_pipeline.xva.inputs import integer
 
 
 def input_locations(configuration, repository, scheduled_date=None):
@@ -78,6 +80,9 @@ def ingest_inputs(configuration, repository, scheduled_date=None, request_key=No
     else:
         if configuration.get("generate_demo"):
             options = dict(configuration.get("generation", {}))
+            if options.get("counterparty_count") is not None or options.get("trade_count") is not None:
+                options.setdefault("count", 1)
+                options.setdefault("rejection_rate", 0)
             options["valuation_date"] = scheduled_date or configuration.get("valuation_date")
             # Scheduled generation uses the static sample as a template, not the daily feed.
             template = input_path if "input_path" in configuration else repository / "examples/xva/inputs.json"
@@ -97,6 +102,45 @@ def ingest_inputs(configuration, repository, scheduled_date=None, request_key=No
             source = str(input_path.resolve())
         handoff = ingest_submissions(raw_texts, source, connection_id, request_key)
     return {**handoff, "output_root": str(output_root), "scheduled_date": scheduled_date}
+
+
+def generate_input_sources(configuration, repository, generation_key, run_date=None):
+    """Generate one scalable synthetic portfolio as reusable feed artifacts before database ingestion.
+
+    Existing artifacts are reused on retry. A changed request must use a new
+    generation run so previously ingested source files are not overwritten.
+    """
+    repository, input_path, output_root = input_locations(configuration, repository)
+    template = read_json(input_path if "input_path" in configuration else repository / "examples/xva/inputs.json")
+    options = {"count": 1, "seed": 42, "noise": 0.1, "rejection_rate": 0,
+               "counterparty_count": 2000, "trade_count": 10000, "horizon_days": 365,
+               "simulation_paths": 20, "collateral_fraction": 0.7,
+               **configuration.get("generation", {})}
+    if options["count"] != 1:
+        raise ValueError("xva_generate_inputs produces one portfolio; use generate_demo for alternative submissions")
+    for field in ("counterparty_count", "trade_count"):
+        integer(options[field], field, 1)
+    options["valuation_date"] = configuration.get("valuation_date") or run_date or template["valuation_date"]
+    generation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, generation_key))
+    root = output_root / "generated" / generation_id
+    request_path, config_path = root / "generation_request.json", root / "submission-000/run_config.json"
+    request = {"options": options, "output_root": str(output_root), "template": template}
+    if request_path.exists():
+        if read_json(request_path) != request:
+            raise ValueError("Generation retry changed its request; start a new generation run")
+        if config_path.exists():
+            saved = read_json(config_path)
+            if all(Path(path).is_file() for path in saved["feeds"].values()):
+                return saved
+    payload = generate_submissions(template, **options)[0]
+    handoff = write_feed_sets([payload], root)[0]
+    handoff.update({"output_root": str(output_root), "generation_id": generation_id,
+                    "generation_summary": {"counterparties": len(payload["counterparties"]),
+                                           "trades": len(payload["trades"]), "csas": len(payload["csas"]),
+                                           "seed": options["seed"], "simulation_paths": payload["simulation"]["paths"]}})
+    write_json(config_path, handoff)
+    write_json(request_path, request)
+    return handoff
 
 
 def ingest_one_feed(configuration, repository, request_key=None, connection_id=DEFAULT_CONNECTION_ID):

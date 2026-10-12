@@ -88,3 +88,22 @@ def test_independent_feed_dag_is_triggered_only():
     dag = DagBag(dag_folder=str(DAGS_FOLDER)).dags["xva_feed_ingestion"]
     assert dag.schedule is None
     assert set(dag.task_ids) == {"ingest_source"}
+
+
+def test_generation_dag_precedes_existing_input_chain():
+    """Check generated portfolios trigger the input DAG with source paths rather than portfolio rows in XCom."""
+    dag = DagBag(dag_folder=str(DAGS_FOLDER)).dags["xva_generate_inputs"]
+    assert dag.schedule is None and dag.max_active_runs == 1
+    trigger = dag.get_task("trigger_inputs")
+    assert trigger.trigger_dag_id == "xva_inputs"
+    assert trigger.upstream_task_ids == {"generate_source_feeds"}
+    assert trigger.skip_when_already_exists and trigger.fail_when_dag_is_paused
+    handoff = {"generation_id": "seeded-generation", "feeds": {"trades": "/tmp/trades.json"}}
+    ti = Mock()
+    ti.xcom_pull.return_value = handoff
+    ti.get_dag.return_value.is_paused = False
+    trigger.render_template_fields({"ti": ti})
+    with pytest.raises(DagRunTriggerException) as request:
+        trigger.execute({"ti": ti})
+    assert request.value.conf == handoff
+    assert request.value.dag_run_id == "xva_inputs_generated__seeded-generation"

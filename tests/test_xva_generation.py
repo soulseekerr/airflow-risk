@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from risk_pipeline.xva.generation import FAULTS, generate_submissions, inject_fault
+from risk_pipeline.xva.generation import FAULTS, generate_portfolio, generate_submissions, inject_fault
 from risk_pipeline.xva.inputs import validate
 
 
@@ -77,3 +77,68 @@ def test_generator_cli_writes_submission_envelope(tmp_path):
                     str(repository / "examples/xva/inputs.json"), "--output", str(output),
                     "--count", "4", "--seed", "17", "--rejection-rate", "0.5"], check=True, capture_output=True)
     assert len(json.loads(output.read_text())["submissions"]) == 4
+
+
+def test_large_portfolio_has_exact_counts_unique_links_and_compact_maturities():
+    """Verify a 2,000-counterparty/10,000-trade portfolio is varied, consistent, and valid before ingestion."""
+    payload = generate_portfolio("2026-10-12")
+    validate(payload)
+    assert len(payload["counterparties"]) == len(payload["credit_curves"]) == len(payload["master_agreements"]) == 2000
+    assert len(payload["trades"]) == 10000 and len(payload["csas"]) == 1400
+    codes = {row["code"] for row in payload["counterparties"]}
+    assert len(codes) == 2000 and all(len(code) == 7 for code in codes)
+    assert {row["counterparty_code"] for row in payload["trades"]} == codes
+    assert len({row["trade_id"] for row in payload["trades"]}) == 10000
+    assert len({row["maturity_date"] for row in payload["trades"]}) == 4
+    assert len({row["notional"] for row in payload["trades"]}) > 100
+    assert {row["direction"] for row in payload["trades"]} == {"pay_fixed", "receive_fixed"}
+    assert payload["simulation"]["paths"] == 20
+
+
+def test_scaled_portfolios_are_seeded_and_keep_rejection_controls(template):
+    """Check synthetic dimensions work with reproducible noise and explicit rejected alternatives."""
+    options = {"counterparty_count": 6, "trade_count": 30, "simulation_paths": 1, "horizon_days": 7,
+               "count": 4, "seed": 51, "rejection_rate": 0.5, "valuation_date": "2026-10-12"}
+    payloads = generate_submissions(template, **options)
+    assert generate_submissions(template, **options) == payloads
+    assert generate_submissions(template, **{**options, "seed": 52}) != payloads
+    accepted = 0
+    for payload in payloads:
+        assert len(payload["counterparties"]) == 6 and len(payload["trades"]) == 30
+        try:
+            validate(payload)
+        except ValueError:
+            pass
+        else:
+            accepted += 1
+    assert accepted == 2
+
+
+@pytest.mark.parametrize("options", [{"counterparty_count": 0}, {"counterparty_count": 10_000_000},
+                                     {"trade_count": 1}, {"horizon_days": 0}, {"simulation_paths": 0},
+                                     {"collateral_fraction": 1.1}, {"seed": True}])
+def test_invalid_synthetic_dimensions_rejected(options):
+    """Reject impossible synthetic sizes or settings before allocating portfolio rows."""
+    with pytest.raises(ValueError):
+        generate_portfolio("2026-10-12", **options)
+
+
+@pytest.mark.parametrize("collateral_fraction", [0, 1])
+def test_short_horizon_and_collateral_extremes(collateral_fraction):
+    """Keep one-day datasets and entirely collateralized or uncollateralized portfolios valid."""
+    payload = generate_portfolio("2026-10-12", 4, 10, horizon_days=1, simulation_paths=1,
+                                 collateral_fraction=collateral_fraction)
+    validate(payload)
+    assert len(payload["csas"]) == int(4 * collateral_fraction)
+
+
+def test_large_generator_cli_defaults_to_one_valid_set(tmp_path):
+    """Produce a single full-size portfolio as independent feeds when size flags are supplied."""
+    root = tmp_path / "scaled-feeds"
+    subprocess.run([sys.executable, "-m", "risk_pipeline.xva.generation", "--feed-directory", str(root),
+                    "--counterparties", "2000", "--trades", "10000", "--simulation-paths", "1",
+                    "--horizon-days", "30", "--valuation-date", "2026-10-12"], check=True, capture_output=True)
+    assert sorted(path.name for path in root.iterdir()) == ["submission-000"]
+    configuration = json.loads((root / "submission-000/run_config.json").read_text())
+    assert len(json.loads(Path(configuration["feeds"]["counterparties"]).read_text())["rows"]) == 2000
+    assert len(json.loads(Path(configuration["feeds"]["trades"]).read_text())["rows"]) == 10000
