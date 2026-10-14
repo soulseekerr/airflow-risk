@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from risk_pipeline.xva.batch import freeze_inputs, load_snapshot, read_json, write_json
-from risk_pipeline.xva.generation import generate_submissions, write_feed_sets
+from risk_pipeline.xva.generation import current_valuation_date, generate_submissions, write_feed_sets
 from risk_pipeline.xva.ingestion import ingest_submissions, parse_payload
 from risk_pipeline.xva.feeds import FIELDS, create_input_set, ingest_feed
 from risk_pipeline.xva.postgres import DEFAULT_CONNECTION_ID
@@ -22,7 +22,7 @@ def input_locations(configuration, repository, scheduled_date=None):
             input_root = repository / input_root
         default = input_root / f"{scheduled_date}.json"
     else:
-        default = repository / "examples/xva/inputs.json"
+        default = repository / "data/xva/inputs.json"
     input_path = Path(configuration.get("input_path", str(default))).expanduser()
     if not input_path.is_absolute():
         input_path = repository / input_path
@@ -36,6 +36,8 @@ def input_locations(configuration, repository, scheduled_date=None):
 
 def prepare_inputs(configuration, repository, scheduled_date=None):
     """Freeze local file inputs for standalone use; the Airflow DAG uses database ingestion instead."""
+    if "input_path" not in configuration and not scheduled_date:
+        raise ValueError("Standalone freezing requires input_path; generate random inputs first")
     _, input_path, output_root = input_locations(configuration, repository, scheduled_date)
     if scheduled_date and read_json(input_path)["valuation_date"] != scheduled_date:
         raise ValueError("Scheduled input valuation date must match the data interval start date")
@@ -45,23 +47,14 @@ def prepare_inputs(configuration, repository, scheduled_date=None):
 
 
 def ingest_inputs(configuration, repository, scheduled_date=None, request_key=None, connection_id=DEFAULT_CONNECTION_ID):
-    """Bind independently sourced feeds, or split legacy/demo portfolios into normalized feed versions."""
+    """Stage explicit feeds or portfolios, defaulting to generated synthetic source files."""
     repository, input_path, output_root = input_locations(configuration, repository, scheduled_date)
     if configuration.get("ingestion_id"):
         handoff = {"ingestion_id": configuration["ingestion_id"], "connection_id": connection_id}
-    elif configuration.get("feeds") is not None or (not configuration.get("generate_demo") and "input_path" not in configuration
-                                                     and (not scheduled_date or not input_path.exists())):
-        specs = configuration.get("feeds")
-        if specs is None:
-            root = input_path.parent / scheduled_date if scheduled_date else repository / "examples/xva/feeds"
-            specs = {kind: str(root / f"{kind}.json") for kind in FIELDS}
+    elif configuration.get("feeds") is not None:
+        specs = configuration["feeds"]
         valuation_date = scheduled_date or configuration.get("valuation_date")
-        if valuation_date is None and not scheduled_date and "feeds" not in configuration:
-            try:
-                valuation_date = parse_payload((root / "settings.json").read_text()).get("valuation_date")
-            except (ValueError, AttributeError):
-                valuation_date = None  # Persist malformed default feeds before rejecting them.
-        if valuation_date is None and "feeds" in configuration:
+        if valuation_date is None:
             raise ValueError("An explicit feed set requires valuation_date")
         feed_ids = {}
         for kind, spec in specs.items():
@@ -79,16 +72,15 @@ def ingest_inputs(configuration, repository, scheduled_date=None, request_key=No
         handoff = create_input_set(feed_ids, valuation_date, connection_id, request_key=request_key)
     else:
         if configuration.get("generate_demo"):
-            options = dict(configuration.get("generation", {}))
-            if options.get("counterparty_count") is not None or options.get("trade_count") is not None:
-                options.setdefault("count", 1)
-                options.setdefault("rejection_rate", 0)
-            options["valuation_date"] = scheduled_date or configuration.get("valuation_date")
-            # Scheduled generation uses the static sample as a template, not the daily feed.
-            template = input_path if "input_path" in configuration else repository / "examples/xva/inputs.json"
-            payloads = generate_submissions(read_json(template), **options)
+            options = {"count": 1, "rejection_rate": 0, **configuration.get("generation", {})}
+            options["valuation_date"] = scheduled_date or configuration.get("valuation_date") or current_valuation_date()
+            payloads = generate_submissions(**options)
             raw_texts = [json.dumps(payload, allow_nan=False) for payload in payloads]
-            source = f"generated:{template}:seed={options.get('seed', 42)}"
+            source = f"generated:synthetic:seed={options.get('seed', 42)}"
+        elif "input_path" not in configuration:
+            sources = generate_input_sources(configuration, repository, request_key or str(uuid.uuid4()),
+                                             run_date=scheduled_date)
+            return ingest_inputs(sources, repository, scheduled_date, request_key, connection_id)
         else:
             raw_text = input_path.read_text()
             try:
@@ -110,8 +102,11 @@ def generate_input_sources(configuration, repository, generation_key, run_date=N
     Existing artifacts are reused on retry. A changed request must use a new
     generation run so previously ingested source files are not overwritten.
     """
-    repository, input_path, output_root = input_locations(configuration, repository)
-    template = read_json(input_path if "input_path" in configuration else repository / "examples/xva/inputs.json")
+    _, _, output_root = input_locations(configuration, repository)
+    generation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, generation_key))
+    root = output_root / "generated" / generation_id
+    request_path, config_path = root / "generation_request.json", root / "submission-000/run_config.json"
+    previous_request = read_json(request_path) if request_path.exists() else None
     options = {"count": 1, "seed": 42, "noise": 0.1, "rejection_rate": 0,
                "counterparty_count": 2000, "trade_count": 10000, "horizon_days": 365,
                "simulation_paths": 20, "collateral_fraction": 0.7,
@@ -120,19 +115,17 @@ def generate_input_sources(configuration, repository, generation_key, run_date=N
         raise ValueError("xva_generate_inputs produces one portfolio; use generate_demo for alternative submissions")
     for field in ("counterparty_count", "trade_count"):
         integer(options[field], field, 1)
-    options["valuation_date"] = configuration.get("valuation_date") or run_date or template["valuation_date"]
-    generation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, generation_key))
-    root = output_root / "generated" / generation_id
-    request_path, config_path = root / "generation_request.json", root / "submission-000/run_config.json"
-    request = {"options": options, "output_root": str(output_root), "template": template}
+    options["valuation_date"] = (configuration.get("valuation_date") or run_date
+                                  or (previous_request["options"]["valuation_date"] if previous_request else current_valuation_date()))
+    request = {"options": options, "output_root": str(output_root)}
     if request_path.exists():
-        if read_json(request_path) != request:
+        if previous_request != request:
             raise ValueError("Generation retry changed its request; start a new generation run")
         if config_path.exists():
             saved = read_json(config_path)
             if all(Path(path).is_file() for path in saved["feeds"].values()):
                 return saved
-    payload = generate_submissions(template, **options)[0]
+    payload = generate_submissions(**options)[0]
     handoff = write_feed_sets([payload], root)[0]
     handoff.update({"output_root": str(output_root), "generation_id": generation_id,
                     "generation_summary": {"counterparties": len(payload["counterparties"]),

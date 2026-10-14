@@ -107,3 +107,21 @@ def test_generation_dag_precedes_existing_input_chain():
         trigger.execute({"ti": ti})
     assert request.value.conf == handoff
     assert request.value.dag_run_id == "xva_inputs_generated__seeded-generation"
+
+
+@pytest.mark.parametrize("configuration", [{}, {"generate_demo": True}, {"valuation_date": "2026-10-10"}])
+def test_manual_input_generation_uses_stable_run_date(monkeypatch, configuration):
+    """Anchor manual random generation to the run's London date while respecting explicit dates."""
+    import pendulum
+    from types import SimpleNamespace
+
+    task = DagBag(dag_folder=str(DAGS_FOLDER)).dags["xva_inputs"].get_task("ingest_raw_inputs")
+    context = {"dag_run": SimpleNamespace(conf=configuration, run_type="manual", run_id="fixed-run",
+                                          run_after=pendulum.datetime(2026, 10, 12, 23, 30, tz="UTC")),
+               "dag": SimpleNamespace(dag_id="xva_inputs")}
+    ingest = Mock(return_value={"ingestion_id": "saved"})
+    monkeypatch.setitem(task.python_callable.__globals__, "get_current_context", lambda: context)
+    monkeypatch.setitem(task.python_callable.__globals__, "ingest_inputs", ingest)
+    assert task.python_callable() == {"ingestion_id": "saved"}
+    assert ingest.call_args.args[0]["valuation_date"] == configuration.get("valuation_date", "2026-10-13")
+    assert context["dag_run"].conf == configuration

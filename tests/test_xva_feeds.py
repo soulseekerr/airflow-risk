@@ -266,13 +266,13 @@ def test_explicit_file_feeds_and_feed_id_references(portfolio, pg_connection, tm
     assert validate_ingestion(resumed)['accepted_count'] == 1
 
 
-def test_default_samples_are_independent_files(tmp_path, pg_connection):
-    """Check manual defaults now ingest the six separate sample sources rather than the combined example."""
-    handoff = ingest_inputs({'output_root':str(tmp_path)},REPOSITORY,connection_id=pg_connection)
+def test_default_random_sources_are_independent_files(tmp_path, pg_connection):
+    """Check empty manual configuration stages random source files without requiring example fixtures."""
+    handoff = ingest_inputs({'output_root':str(tmp_path)},tmp_path,connection_id=pg_connection)
     assert validate_ingestion(handoff)['accepted_count'] == 1
     with transaction(pg_connection,readonly=True) as cursor:
         cursor.execute('SELECT source FROM airflow_xva.input_feed_submissions')
-        assert all('/examples/xva/feeds/' in row[0] for row in cursor.fetchall())
+        assert all('/generated/' in row[0] for row in cursor.fetchall())
 
 
 def test_legacy_history_is_preserved_when_referenced(portfolio, pg_connection, tmp_path):
@@ -330,7 +330,7 @@ def test_independent_airflow_feed_entrypoint_is_idempotent(portfolio,pg_connecti
 def test_generator_writes_separate_feeds_consumable_by_input_dag(tmp_path,pg_connection,monkeypatch):
     """Verify generated independent feed files and their run configuration load without a combined JSON portfolio."""
     root = tmp_path/'generated'
-    monkeypatch.setattr(sys,'argv',['generation','--template',str(REPOSITORY/'examples/xva/inputs.json'),
+    monkeypatch.setattr(sys,'argv',['generation','--counterparties','3','--trades','12',
                                   '--feed-directory',str(root),'--count','1','--rejection-rate','0',
                                   '--valuation-date','2026-10-11'])
     generate_main()
@@ -343,14 +343,18 @@ def test_generator_writes_separate_feeds_consumable_by_input_dag(tmp_path,pg_con
         assert cursor.fetchone()[0] == 6
 
 
-def test_scheduled_default_independent_directory(tmp_path,pg_connection):
-    """Read each scheduled source from its own valuation-date directory when no legacy combined feed exists."""
+def test_scheduled_defaults_generate_instead_of_reading_old_files(tmp_path,pg_connection):
+    """Ignore old daily files unless explicitly configured, and generate the scheduled valuation date."""
     root = tmp_path/'data/xva/2026-10-10'
     root.mkdir(parents=True)
     for path in (REPOSITORY/'examples/xva/feeds').iterdir():
         (root/path.name).write_bytes(path.read_bytes())
     ingestion = ingest_inputs({'output_root':str(tmp_path/'artifacts')},tmp_path,scheduled_date='2026-10-10',connection_id=pg_connection)
-    assert validate_ingestion(ingestion)['accepted_count'] == 1
+    frozen = validate_ingestion(ingestion)
+    inputs = read_json(frozen['snapshot_path'])['inputs']
+    assert frozen['accepted_count'] == 1
+    assert inputs['valuation_date'] == '2026-10-10'
+    assert len(inputs['trades']) == 10000
 
 
 @pytest.mark.parametrize('points', ['invalid', [42], [{'survival_probability':0.95}]])

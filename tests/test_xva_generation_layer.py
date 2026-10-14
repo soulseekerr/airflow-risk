@@ -16,7 +16,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 def test_generation_layer_defaults_and_immutable_retry(tmp_path, monkeypatch):
     """Generate one full-size portfolio and reuse its sources on retry without regenerating or overwriting them."""
     configuration = {"output_root": str(tmp_path)}
-    handoff = generate_input_sources(configuration, REPOSITORY, "large-source-run", run_date="2026-10-12")
+    handoff = generate_input_sources(configuration, tmp_path / "no-example-checkout", "large-source-run", run_date="2026-10-12")
     assert handoff["valuation_date"] == "2026-10-12"
     assert handoff["generation_summary"] == {"counterparties": 2000, "trades": 10000, "csas": 1400,
                                              "seed": 42, "simulation_paths": 20}
@@ -28,7 +28,7 @@ def test_generation_layer_defaults_and_immutable_retry(tmp_path, monkeypatch):
         raise AssertionError("Retry must reuse existing source artifacts")
 
     monkeypatch.setattr("risk_pipeline.xva.workflow.generate_submissions", forbidden)
-    assert generate_input_sources(configuration, REPOSITORY, "large-source-run", run_date="2026-10-12") == handoff
+    assert generate_input_sources(configuration, tmp_path / "no-example-checkout", "large-source-run", run_date="2026-10-12") == handoff
     assert {path: Path(path).read_bytes() for path in handoff["feeds"].values()} == previous
     with pytest.raises(ValueError, match="new generation run"):
         generate_input_sources({**configuration, "generation": {"seed": 99}}, REPOSITORY,
@@ -85,3 +85,21 @@ def test_scaled_generate_demo_defaults_to_one_portfolio(tmp_path, pg_connection)
     frozen = validate_ingestion(ingestion)
     assert (frozen["accepted_count"], frozen["rejected_count"]) == (1, 0)
     assert len(read_json(frozen["snapshot_path"])["inputs"]["trades"]) == 25
+
+
+def test_generation_retry_keeps_original_default_date(tmp_path, monkeypatch):
+    """Keep a no-date request reproducible when the retry runs on a later calendar day."""
+    monkeypatch.setattr("risk_pipeline.xva.workflow.current_valuation_date", lambda: "2026-10-12")
+    configuration = {"output_root": str(tmp_path), "generation": {"counterparty_count": 3, "trade_count": 12}}
+    original = generate_input_sources(configuration, tmp_path, "midnight-retry")
+    monkeypatch.setattr("risk_pipeline.xva.workflow.current_valuation_date", lambda: "2026-10-13")
+    assert generate_input_sources(configuration, tmp_path, "midnight-retry") == original
+    Path(original["feeds"]["trades"]).unlink()
+    assert generate_input_sources(configuration, tmp_path, "midnight-retry") == original
+
+
+def test_standalone_freezing_requires_explicit_input_file(tmp_path):
+    """Prevent standalone freezing from silently selecting an example portfolio."""
+    from risk_pipeline.xva.workflow import prepare_inputs
+    with pytest.raises(ValueError, match="requires input_path"):
+        prepare_inputs({}, tmp_path)

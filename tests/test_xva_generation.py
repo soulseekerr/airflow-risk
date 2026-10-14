@@ -71,10 +71,9 @@ def test_invalid_generation_options_rejected(template, options):
 
 def test_generator_cli_writes_submission_envelope(tmp_path):
     """Check the standalone generator creates a portable file consumable by the input DAG."""
-    repository = Path(__file__).resolve().parents[1]
     output = tmp_path / "generated/submissions.json"
-    subprocess.run([sys.executable, "-m", "risk_pipeline.xva.generation", "--template",
-                    str(repository / "examples/xva/inputs.json"), "--output", str(output),
+    subprocess.run([sys.executable, "-m", "risk_pipeline.xva.generation", "--output", str(output),
+                    "--counterparties", "3", "--trades", "12",
                     "--count", "4", "--seed", "17", "--rejection-rate", "0.5"], check=True, capture_output=True)
     assert len(json.loads(output.read_text())["submissions"]) == 4
 
@@ -132,12 +131,12 @@ def test_short_horizon_and_collateral_extremes(collateral_fraction):
     assert len(payload["csas"]) == int(4 * collateral_fraction)
 
 
-def test_large_generator_cli_defaults_to_one_valid_set(tmp_path):
-    """Produce a single full-size portfolio as independent feeds when size flags are supplied."""
+def test_generator_cli_defaults_to_large_random_set_without_examples(tmp_path):
+    """Generate the default large portfolio from a working directory that has no example files."""
     root = tmp_path / "scaled-feeds"
     subprocess.run([sys.executable, "-m", "risk_pipeline.xva.generation", "--feed-directory", str(root),
-                    "--counterparties", "2000", "--trades", "10000", "--simulation-paths", "1",
-                    "--horizon-days", "30", "--valuation-date", "2026-10-12"], check=True, capture_output=True)
+                    "--simulation-paths", "1",
+                    "--horizon-days", "30", "--valuation-date", "2026-10-12"], check=True, capture_output=True, cwd=tmp_path)
     assert sorted(path.name for path in root.iterdir()) == ["submission-000"]
     configuration = json.loads((root / "submission-000/run_config.json").read_text())
     assert len(json.loads(Path(configuration["feeds"]["counterparties"]).read_text())["rows"]) == 2000

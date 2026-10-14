@@ -74,7 +74,7 @@ def test_raw_inputs_commit_before_validation_and_calculation(template, tmp_path,
 def test_generated_ingestion_preserves_rejections_and_selects_last_accepted(tmp_path, pg_connection):
     """Retain every generated submission while sending only the final accepted portfolio to calculations."""
     handoff = ingest_inputs({"generate_demo": True, "generation": {"count": 8, "seed": 42,
-                            "noise": 0.1, "rejection_rate": 0.25}, "output_root": str(tmp_path)},
+                            "noise": 0.1, "rejection_rate": 0.25, "counterparty_count": 3, "trade_count": 12}, "output_root": str(tmp_path)},
                             REPOSITORY, request_key="generated-run", connection_id=pg_connection)
     assert len(rows(pg_connection, handoff["ingestion_id"])) == 8
     assert all(row[1] == "pending" for row in rows(pg_connection, handoff["ingestion_id"]))
@@ -146,9 +146,9 @@ def test_scheduled_date_mismatch_is_recorded(template, tmp_path, pg_connection):
     assert not (tmp_path / "output").exists()
 
 
-def test_scheduled_generator_shifts_sample_without_daily_feed(tmp_path, pg_connection):
-    """Use the sample template for scheduled generation and shift all related dates coherently."""
-    handoff = ingest_inputs({"generate_demo": True, "generation": {"count": 2, "rejection_rate": 0},
+def test_scheduled_generator_builds_random_inputs_without_daily_feed(tmp_path, pg_connection):
+    """Generate a synthetic portfolio for the scheduled date without reading any template."""
+    handoff = ingest_inputs({"generate_demo": True, "generation": {"count": 2, "rejection_rate": 0, "counterparty_count": 3, "trade_count": 12},
                             "output_root": str(tmp_path)}, REPOSITORY,
                             scheduled_date="2026-10-12", connection_id=pg_connection)
     result = validate_ingestion(handoff)
@@ -212,7 +212,8 @@ def test_generated_accepted_snapshot_runs_through_publication_and_reports(templa
     """Exercise the full generated intake-to-report workflow against real PostgreSQL."""
     source = write_json(tmp_path / "template.json", template)
     ingestion = ingest_inputs({"generate_demo": True, "input_path": source,
-                               "generation": {"count": 4, "rejection_rate": 0.5},
+                               "generation": {"count": 4, "rejection_rate": 0.5, "counterparty_count": 3, "trade_count": 12,
+                                              "horizon_days": 7, "simulation_paths": 2},
                                "output_root": str(tmp_path / "artifacts")}, REPOSITORY,
                               request_key="generated-full-chain", connection_id=pg_connection)
     frozen = validate_ingestion(ingestion)
