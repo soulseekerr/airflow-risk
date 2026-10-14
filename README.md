@@ -3,6 +3,9 @@
 See [README_PROJECT.md](README_PROJECT.md) for the original demo overview and
 [README_XVA.md](README_XVA.md) for the new PV, positive exposure, and CVA batch.
 
+Use the [Streamlit control panel](README_UI.md) to launch batches, monitor linked
+workflows, inspect CVA results, and submit counterparty corrections.
+
 ```
 airflow-risk-demo/
 │

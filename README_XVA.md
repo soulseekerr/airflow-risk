@@ -10,6 +10,8 @@ This first version is an educational model, with synthetic interest rate swaps
 in EUR. Results are stored in PostgreSQL through the same
 `risk_postgres` Airflow connection used by `xcom_demo`.
 
+For the Streamlit GUI, see [README_UI.md](README_UI.md).
+
 ## PostgreSQL connection
 
 Configure the Airflow connection `risk_postgres` with your PostgreSQL host, port,
