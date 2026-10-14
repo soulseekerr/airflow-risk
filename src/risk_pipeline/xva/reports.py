@@ -38,19 +38,7 @@ def load_published_results(publication_path):
         valuation_date = snapshot["inputs"]["valuation_date"]
         if manifest.get("valuation_date", valuation_date) != valuation_date:
             raise ValueError("Publication valuation date does not match its batch")
-        queries = {
-            "trade_pv": "SELECT trade_id, ma_id, counterparty_code, 'EUR' AS currency, pv FROM airflow_xva.trade_pv WHERE valuation_date = %s ORDER BY trade_id",
-            "exposures": "SELECT ma_id, exposure_date AS date, counterparty_code, currency, expected_positive_exposure, discount_factor, survival_probability, cva_increment FROM airflow_xva.exposures WHERE valuation_date = %s ORDER BY ma_id, exposure_date",
-            "netting_set_cva": "SELECT ma_id, counterparty_code, currency, cva FROM airflow_xva.netting_set_cva WHERE valuation_date = %s ORDER BY ma_id",
-            "counterparty_cva": "SELECT counterparty_code, currency, value_calc AS cva, value_adj AS cva_adj FROM airflow_xva.counterparty_xva WHERE valuation_date = %s AND xva_type = 'CVA' ORDER BY counterparty_code",
-        }
-        results = {}
-        for key, query in queries.items():
-            cursor.execute(query, (valuation_date,))
-            columns = [column[0] for column in cursor.description]
-            results[key] = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        for exposure in results["exposures"]:
-            exposure["date"] = exposure["date"].isoformat()
+        results = read_results(cursor, valuation_date)
     reconcile(results, snapshot["inputs"])
     total_cva = sum(r["cva"] for r in results["counterparty_cva"])
     if (len(results["trade_pv"]) != manifest["trade_count"]
@@ -58,6 +46,24 @@ def load_published_results(publication_path):
             or not math.isclose(total_cva, manifest["total_cva"], rel_tol=1e-10, abs_tol=1e-8)):
         raise ValueError("Database results do not match the publication manifest")
     return snapshot, results
+
+
+def read_results(cursor, valuation_date):
+    """Load all date-level result rows using the caller's consistent transaction snapshot."""
+    queries = {
+        "trade_pv": "SELECT trade_id, ma_id, counterparty_code, 'EUR' AS currency, pv FROM airflow_xva.trade_pv WHERE valuation_date = %s ORDER BY trade_id",
+        "exposures": "SELECT ma_id, exposure_date AS date, counterparty_code, currency, expected_positive_exposure, discount_factor, survival_probability, cva_increment FROM airflow_xva.exposures WHERE valuation_date = %s ORDER BY ma_id, exposure_date",
+        "netting_set_cva": "SELECT ma_id, counterparty_code, currency, cva FROM airflow_xva.netting_set_cva WHERE valuation_date = %s ORDER BY ma_id",
+        "counterparty_cva": "SELECT counterparty_code, currency, value_calc AS cva, value_adj AS cva_adj FROM airflow_xva.counterparty_xva WHERE valuation_date = %s AND xva_type = 'CVA' ORDER BY counterparty_code",
+    }
+    results = {}
+    for key, query in queries.items():
+        cursor.execute(query, (valuation_date,))
+        columns = [column[0] for column in cursor.description]
+        results[key] = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    for exposure in results["exposures"]:
+        exposure["date"] = exposure["date"].isoformat()
+    return results
 
 
 def write_csv(path, rows, fields):

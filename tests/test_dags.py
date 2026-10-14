@@ -125,3 +125,21 @@ def test_manual_input_generation_uses_stable_run_date(monkeypatch, configuration
     assert task.python_callable() == {"ingestion_id": "saved"}
     assert ingest.call_args.args[0]["valuation_date"] == configuration.get("valuation_date", "2026-10-13")
     assert context["dag_run"].conf == configuration
+
+
+def test_counterparty_rerun_dag_triggers_reports_with_revision_identity():
+    """Verify corrected publications reach reports and use a distinct trigger identity for every rerun."""
+    dag = DagBag(dag_folder=str(DAGS_FOLDER)).dags["xva_counterparty_rerun"]
+    assert dag.schedule is None and dag.max_active_runs == 1
+    assert set(dag.task_ids) == {"validate_updated_inputs", "calculate_updated_counterparty", "publish_correction", "trigger_reports"}
+    assert dag.get_task("publish_correction").upstream_task_ids == {"validate_updated_inputs", "calculate_updated_counterparty"}
+    trigger = dag.get_task("trigger_reports")
+    handoff = {"batch_id": "revised", "publication_path": "/tmp/revised/published.json", "rerun_id": "correction-1"}
+    ti = Mock()
+    ti.xcom_pull.return_value = handoff
+    ti.get_dag.return_value.is_paused = False
+    trigger.render_template_fields({"ti": ti})
+    with pytest.raises(DagRunTriggerException) as request:
+        trigger.execute({"ti": ti})
+    assert request.value.conf == handoff
+    assert request.value.dag_run_id == "xva_reports_counterparty__correction-1"

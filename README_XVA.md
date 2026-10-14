@@ -10,6 +10,8 @@ This first version is an educational model, with synthetic interest rate swaps
 in EUR. Results are stored in PostgreSQL through the same
 `risk_postgres` Airflow connection used by `xcom_demo`.
 
+For the Streamlit GUI, see [README_UI.md](README_UI.md).
+
 ## PostgreSQL connection
 
 Configure the Airflow connection `risk_postgres` with your PostgreSQL host, port,
@@ -64,6 +66,7 @@ resolves metadata-stored connections through its execution API.
 
 | DAG | Schedule | Tasks |
 | --- | --- | --- |
+| `xva_counterparty_rerun` | Triggered only | Validate corrected feeds, recompute one counterparty, publish and refresh reports |
 | `xva_generate_inputs` | Triggered only | Generate a scalable synthetic portfolio as source feeds, trigger inputs |
 | `xva_feed_ingestion` | Triggered only | Stage one independently arriving source/feed |
 | `xva_inputs` | Daily, initially paused | Bind explicit feed versions, validate/freeze, trigger calculations |
@@ -425,6 +428,66 @@ FROM airflow_xva.input_trades t
 JOIN airflow_xva.input_set_feeds b ON b.feed_id = t.feed_id AND b.feed_type = 'trades'
 JOIN airflow_xva.input_sets s ON s.submission_id = b.submission_id
 WHERE s.status = 'accepted' AND s.submission_id = '<submission_id>';
+```
+
+## Rerun one counterparty after correcting inputs
+
+Trigger **`xva_counterparty_rerun`** with the valuation date, seven-character
+counterparty code, and the feed versions you corrected:
+
+```json
+{
+  "valuation_date": "2026-10-14",
+  "counterparty_code": "0000001",
+  "feeds": {
+    "counterparties": "/path/to/corrected-counterparties.json",
+    "trades": {"feed_id": "<new-trades-feed-id>"}
+  }
+}
+```
+
+Each supplied feed is a **complete version of that source**, with the other
+counterparties' rows unchanged. For example, a revised trades file contains all
+trades, including the corrected counterparty's changes. Supply only the feeds
+that changed; omitted feeds come from the current published input snapshot for
+that date. File paths, `{ "path": "...", "source": "provider" }` objects, and
+`{ "feed_id": "..." }` references use the existing feed-ingestion format.
+The rerun does not generate new random data or select feeds by arrival time.
+
+The DAG stages raw feed versions before validation, freezes the corrected input
+set, and calculates **only the selected counterparty** on the existing shared
+scenario and exposure-reporting grid. It atomically replaces that counterparty's
+trade PVs, exposures, netting-set CVA, and counterparty CVA. Its `value_adj` resets
+to the new `value_calc`. Other counterparties' rows, adjustment timestamps, and
+non-CVA XVA types are preserved. Removed trades or netting sets leave no old output
+rows. An invalid correction or a publication failure leaves current outputs intact.
+
+A new current batch snapshot represents the complete portfolio with the correction,
+so the automatically triggered `xva_reports` run includes all counterparties and
+the corrected date-level CVA total. Previous batch snapshots remain available for
+audit; their old publication manifests are superseded.
+
+Clear a failed task in the **same DAG run** to retry the frozen correction. A
+publication retry after commit does not apply the correction twice. To change the
+feed contents or select another feed version, start a new DAG run. If another full
+batch or counterparty correction publishes while this rerun is in flight, it fails
+as stale; start a new run against the current revision.
+
+This version supports counterparty data, credit curves, trades, MAs, and CSA
+corrections for existing counterparties. Changes to shared market/simulation
+settings, a curve used by another counterparty, or the portfolio-wide maturity or
+reporting grid require a full batch rerun. A new counterparty also requires a full
+batch. A counterparty can have all its trades removed provided other portfolio
+trades remain; its recalculated CVA becomes zero.
+
+Inspect the correction history in PostgreSQL:
+
+```sql
+SELECT valuation_date, counterparty_code, status,
+       old_cva, new_cva, new_cva - old_cva AS cva_change,
+       base_batch_id, published_batch_id, published_at
+FROM airflow_xva.counterparty_reruns
+ORDER BY prepared_at DESC;
 ```
 
 ## Input contract

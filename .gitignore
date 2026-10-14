@@ -27,3 +27,6 @@ simple_auth_manager_passwords.json.generated
 .coverage
 .coverage.*
 htmlcov/
+
+# Local control-panel secrets
+.streamlit/secrets.toml

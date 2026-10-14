@@ -37,6 +37,15 @@ CREATE TABLE IF NOT EXISTS airflow_xva.batches (
 );
 ALTER TABLE airflow_xva.batches ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE UNIQUE INDEX IF NOT EXISTS batches_current_date ON airflow_xva.batches (valuation_date) WHERE is_current;
+CREATE TABLE IF NOT EXISTS airflow_xva.counterparty_reruns (
+ rerun_id TEXT PRIMARY KEY, valuation_date DATE NOT NULL,
+ counterparty_code VARCHAR(7) NOT NULL, base_batch_id TEXT NOT NULL REFERENCES airflow_xva.batches(batch_id),
+ request JSONB NOT NULL, snapshot_batch_id TEXT, ingestion_id TEXT, submission_id TEXT,
+ status TEXT NOT NULL DEFAULT 'prepared' CHECK (status IN ('prepared', 'published')),
+ published_batch_id TEXT REFERENCES airflow_xva.batches(batch_id),
+ old_cva DOUBLE PRECISION, new_cva DOUBLE PRECISION,
+ prepared_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), published_at TIMESTAMPTZ
+);
 CREATE TABLE IF NOT EXISTS airflow_xva.trade_pv (
  valuation_date DATE NOT NULL,
  trade_id TEXT NOT NULL, ma_id TEXT NOT NULL, counterparty_code VARCHAR(7) NOT NULL,

@@ -90,14 +90,21 @@ def reporting_days(inputs, horizon_days):
     return sorted(days)
 
 
-def calculate(inputs, scenarios):
+def calculate(inputs, scenarios, counterparty_code=None):
     """Calculate trade PV, expected positive exposure by MA, and unilateral CVA.
 
     Expect validated EUR inputs and daily scenarios covering all trade maturities.
     Average collateral-adjusted exposure across paths, integrate discounted
     exposure against survival decrements and loss given default, then aggregate
-    MA CVA by counterparty. Return result collections without writing artifacts.
+    MA CVA by counterparty. An optional counterparty filter preserves the full
+    portfolio scenario/reporting grid while pricing only that counterparty.
+    Return result collections without writing artifacts.
     """
+    selected = {c["code"] for c in inputs["counterparties"]}
+    if counterparty_code is not None:
+        if counterparty_code not in selected:
+            raise ValueError("Unknown counterparty for calculation")
+        selected = {counterparty_code}
     valuation = date.fromisoformat(inputs["valuation_date"])
     dates = [date.fromisoformat(d) for d in scenarios["dates"]]
     flat_rate = inputs["market"]["flat_rate"]
@@ -110,13 +117,15 @@ def calculate(inputs, scenarios):
         if len(rates) != len(dates) or rates[0] != flat_rate or not all(math.isfinite(r) for r in rates):
             raise ValueError("Invalid scenario rate path")
     pv = [{"trade_id": t["trade_id"], "ma_id": t["ma_id"], "counterparty_code": t["counterparty_code"],
-           "currency": t["currency"], "pv": swap_pv(t, valuation, flat_rate)} for t in inputs["trades"]]
+           "currency": t["currency"], "pv": swap_pv(t, valuation, flat_rate)} for t in inputs["trades"] if t["counterparty_code"] in selected]
     counterparties = {c["code"]: c for c in inputs["counterparties"]}
     curves = {c["curve_id"]: c for c in inputs["credit_curves"]}
     csas = {c["ma_id"]: c for c in inputs["csas"]}
     profiles, cva_rows = [], []
     sample_days = reporting_days(inputs, len(dates) - 1)
     for ma in inputs["master_agreements"]:
+        if ma["counterparty_code"] not in selected:
+            continue
         trades = [t for t in inputs["trades"] if t["ma_id"] == ma["ma_id"]]
         if not trades:
             continue
@@ -140,7 +149,7 @@ def calculate(inputs, scenarios):
             previous_survival, previous_discounted = probability, discounted
         cva_rows.append({"ma_id": ma["ma_id"], "counterparty_code": cpty["code"], "cva": cva, "currency": inputs["reporting_currency"]})
     aggregates = [{"counterparty_code": c["code"], "cva": sum(row["cva"] for row in cva_rows if row["counterparty_code"] == c["code"]),
-                   "currency": inputs["reporting_currency"]} for c in inputs["counterparties"]]
+                   "currency": inputs["reporting_currency"]} for c in inputs["counterparties"] if c["code"] in selected]
     return {"trade_pv": pv, "exposures": profiles, "netting_set_cva": cva_rows, "counterparty_cva": aggregates}
 
 
