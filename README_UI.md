@@ -32,10 +32,40 @@ sessions need a new server-side token when it expires. Credentials are read by t
 Streamlit server and are never entered into or rendered by browser widgets.
 
 The Streamlit process must resolve the same `risk_postgres` Airflow connection as
-the workers. Using the same `AIRFLOW_HOME`, configuration, and secrets backend is
-usually sufficient locally. An `AIRFLOW_CONN_RISK_POSTGRES` environment variable
-can also provide the connection. The application does not fetch connection
-credentials from Airflow's API.
+the workers. The panel uses Airflow's server-side secrets resolver, which supports
+connections saved in the metadata database, configured secrets backends, and
+`AIRFLOW_CONN_RISK_POSTGRES`. Use the same `AIRFLOW_HOME` and metadata database
+configuration as your Airflow server, including its Fernet key if configured, to
+read a saved encrypted connection. The application does not fetch credentials
+from Airflow's REST API.
+
+Airflow 3's task SDK behaves differently in a standalone Python process: its
+fallback lookup skips the metadata database. A plain `PostgresHook(...)` shell
+probe can therefore report that `risk_postgres` is undefined even when your DAGs
+use it successfully. To test the same connection resolution as the panel, run:
+
+```bash
+python - <<'PY'
+from airflow.models.connection import Connection
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+connection = Connection.get_connection_from_secrets("risk_postgres")
+hook = PostgresHook(postgres_conn_id="risk_postgres", connection=connection)
+print(hook.get_first("SELECT 1"))
+PY
+```
+
+A successful probe prints `(1,)`. If the saved connection still cannot be found,
+check that the Streamlit terminal points at the same Airflow metadata database.
+As an alternative, provide the connection directly as a server-side environment
+variable (replace the placeholders with your PostgreSQL settings):
+
+```bash
+export AIRFLOW_CONN_RISK_POSTGRES='{"conn_type":"postgres","host":"localhost","port":5432,"schema":"<database>","login":"<username>","password":"<password>"}'
+```
+
+Restart Streamlit after changing its environment. Do not send database passwords
+or connection URIs when sharing diagnostic errors.
 
 For report downloads, mount the same artifact directory on Streamlit and Airflow
 workers at the **same absolute path**. `XVA_OUTPUT_ROOT` defaults to
