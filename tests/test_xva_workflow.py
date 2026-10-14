@@ -35,9 +35,9 @@ def publication(source, tmp_path, pg_connection):
     return run_batch(source, tmp_path / "output", pg_connection)
 
 
-def test_input_handoff_and_manual_defaults(tmp_path):
+def test_input_handoff_and_explicit_fixture(source, tmp_path):
     """Verify manual defaults produce a valid frozen handoff and reject a mismatched batch ID."""
-    handoff = prepare_inputs({"output_root": str(tmp_path)}, REPOSITORY)
+    handoff = prepare_inputs({"input_path": source, "output_root": str(tmp_path)}, REPOSITORY)
     assert require_snapshot(handoff) == handoff["snapshot_path"]
     assert handoff["batch_id"].startswith("2026-10-10-")
     with pytest.raises(ValueError, match="does not match"):
@@ -45,12 +45,12 @@ def test_input_handoff_and_manual_defaults(tmp_path):
 
 
 @pytest.mark.parametrize("selection", ["airflow_home", "user_home", "environment", "configuration", "relative_output"])
-def test_portable_output_paths(tmp_path, monkeypatch, selection):
+def test_portable_output_paths(source, tmp_path, monkeypatch, selection):
     """Check output location precedence and path expansion across supported configuration sources."""
     monkeypatch.delenv("XVA_OUTPUT_ROOT", raising=False)
     monkeypatch.delenv("XVA_PROJECT_ROOT", raising=False)
     monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path / "airflow"))
-    configuration = {}
+    configuration = {"input_path": source}
     expected = tmp_path / "airflow/xva"
     if selection == "user_home":
         monkeypatch.delenv("AIRFLOW_HOME", raising=False)

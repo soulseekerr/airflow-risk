@@ -31,8 +31,9 @@ From the repository root, using the installed development environment:
 ```bash
 source .venv/bin/activate
 XVA_OUTPUT_ROOT="${XVA_OUTPUT_ROOT:-${AIRFLOW_HOME:-$HOME/airflow}/xva}"
+python -m risk_pipeline.xva.generation --output /tmp/xva-generated.json --count 1
 python -m risk_pipeline.xva.batch \
-  --inputs examples/xva/inputs.json \
+  --inputs /tmp/xva-generated.json \
   --output "$XVA_OUTPUT_ROOT"
 ```
 
@@ -113,31 +114,28 @@ writable directory. A run's `output_root` configuration overrides that setting.
 Relative output directories are resolved against Airflow home; `~` is expanded.
 Use the same shared artifact directory across all workers.
 
-The checkout is inferred from the DAG file location. If you copy the DAG files
-into a separate Airflow DAG directory, set `XVA_PROJECT_ROOT` to the checkout
-containing `examples/xva/inputs.json` and `data/xva`. Relative `input_path` and
-`XVA_INPUT_ROOT` paths are resolved against that checkout. For example, use
-`{"input_path":"examples/xva/inputs.json"}` as a manual run's configuration.
+The checkout is inferred from the DAG file location. If you copy DAGs into a
+separate Airflow directory, set `XVA_PROJECT_ROOT` to the checkout. Relative
+explicit input paths are resolved against that checkout.
 
-For daily operation, supply each source at `data/xva/YYYY-MM-DD/<feed_type>.json`
-in the repository (legacy `data/xva/YYYY-MM-DD.json` files remain supported),
-or set `XVA_INPUT_ROOT` in the Airflow processes to another input directory.
-An explicit daily interval timetable in `Europe/London` is used. A run after
-midnight processes the preceding calendar day's valuation date (its interval
-start), and requires the file's valuation date to match. Missing or stale data fails
-the input DAG and prevents the calculation trigger. Once the feed is ready:
+Trigger **`xva_generate_inputs`** to generate independent random source files and
+run the complete pipeline. You can also trigger **`xva_inputs`** with an empty
+configuration: it generates 2,000 counterparties and 10,000 trades before staging
+the six source feeds in PostgreSQL. Neither path reads example files.
+Manual generation defaults to the current London calendar date; supply
+`valuation_date` to override it. Retries reuse the saved generation date and files.
+
+For daily operation, unpause `xva_inputs`. Its `Europe/London` timetable generates
+random inputs for the preceding calendar day's valuation date (the interval start):
 
 ```bash
 airflow dags unpause xva_inputs
 ```
 
-Manual input runs default to the six separate sample feeds in `examples/xva/feeds`.
-An explicit `input_path` still accepts a legacy combined portfolio file.
-In the Airflow UI, trigger **`xva_inputs`** to start a new batch. You can leave
-its configuration empty to use the sample feeds, or supply a valuation date and
-explicit `feeds` references as described below. Do not start a new batch by triggering `xva_calculations` with an
-empty configuration: its `validate_batch` task requires the frozen input
-identity and path supplied by `xva_inputs`.
+Explicit `feeds` references or `input_path` remain supported for replaying generated
+files and integrating feeds. Files under `data/xva` are not automatically loaded.
+Do not trigger `xva_calculations` with an empty configuration: its `validate_batch`
+task requires the frozen identity and path supplied by `xva_inputs`.
 
 When the input schedule is enabled, `airflow dags trigger xva_inputs --conf ...`
 can also be used. Only `xva_inputs` has a schedule. Synthetic generation, individual feed ingestion,
@@ -225,7 +223,8 @@ set in source order is selected; the others remain audited and are not calculate
 
 ### Supply independently arriving feeds
 
-The six example sources are under [examples/xva/feeds](examples/xva/feeds).
+The six example sources under [examples/xva/feeds](examples/xva/feeds) remain
+as test fixtures and input-format references; runtime defaults do not read them.
 Entity feeds accept an array of rows, or `{"valuation_date":"2026-10-11","rows":[...]}`.
 The settings feed accepts a single object containing `valuation_date`,
 `reporting_currency`, `market`, and `simulation`, or its flat relational fields.
@@ -347,9 +346,9 @@ python -m risk_pipeline.xva.generation --feed-directory /tmp/xva-large \
   --simulation-paths 20 --horizon-days 365
 ```
 
-When size flags are supplied, the CLI defaults to **one valid portfolio**. Its
+The CLI defaults to **one valid random portfolio**, with 2,000 counterparties
+and 10,000 trades even without size flags. It reads no template file. Its
 `submission-000/run_config.json` can also be used to trigger `xva_inputs` manually.
-Without size flags, the previous small-template defaults remain unchanged.
 
 ### Generate noisy demo inputs with deliberate rejections
 
@@ -369,7 +368,7 @@ Trigger `xva_inputs` with this configuration in the Airflow UI:
 ```
 
 The generator creates independent feed versions for each alternative input set.
-For the supplied template this produces **six accepted and two rejected portfolios**,
+This produces **six accepted and two rejected random portfolios**,
 then calculates the last accepted one. Ordinary noise varies rates, notionals,
 recovery rates, credit survival probabilities, and CSA thresholds within valid
 bounds. Deliberate faults create predictable rejects: invalid counterparty codes,
@@ -377,10 +376,9 @@ out-of-range recovery rates, negative notionals, unknown MAs, invalid survival
 probabilities, or unsupported trade currencies. Validation checks actual payloads;
 it does not accept/reject them based on a generator label.
 
-Add `counterparty_count` and `trade_count` to `generation` to use synthetic
-portfolios of those sizes instead of the small template. With size controls,
-`generate_demo` defaults to one valid portfolio unless `count` and
-`rejection_rate` are explicitly supplied. For example, `count: 8` and
+Add `counterparty_count` and `trade_count` to `generation` to change the default
+2,000 counterparties and 10,000 trades. `generate_demo` defaults to one valid
+random portfolio unless `count` and `rejection_rate` are explicitly supplied. For example, `count: 8` and
 `rejection_rate: 0.25` produce eight full-size alternatives with two rejects.
 
 `noise` must be between 0 and 0.5. `rejection_rate` is between 0 and 1; the rejected
@@ -388,9 +386,9 @@ count is `count * rejection_rate`, rounded to the nearest integer with halves up
 The seed makes the generated data repeatable; change it for another sample.
 Market parameters and simulation seeds also vary across portfolios. An all-rejected
 generation is permitted and intentionally fails validation while preserving its audit trail.
-Manual generation uses the sample date unless `valuation_date` is supplied.
-Scheduled generation shifts the template to the daily interval start date, including
-credit-curve points and trade dates. Generation is opt-in; normal file ingestion remains available.
+Manual generation uses the current London date unless `valuation_date` is supplied.
+Scheduled generation builds random data for the daily interval start date, including
+consistent credit-curve points and trade dates. Explicit file ingestion remains available.
 
 You can also generate a file before ingestion:
 
@@ -431,7 +429,7 @@ WHERE s.status = 'accepted' AND s.submission_id = '<submission_id>';
 
 ## Input contract
 
-[examples/xva/inputs.json](examples/xva/inputs.json) is a complete example with
+[examples/xva/inputs.json](examples/xva/inputs.json) is a test fixture with
 three trades, two counterparties, two MAs, one collateralized MA, and one
 uncollateralized MA. Counterparty codes are strings so leading zeros survive.
 

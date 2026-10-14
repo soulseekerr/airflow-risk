@@ -1,4 +1,4 @@
-"""Daily input ingestion, followed by a batch-specific calculation trigger."""
+"""Daily synthetic input generation and ingestion, followed by a calculation trigger."""
 
 from pathlib import Path
 
@@ -32,7 +32,13 @@ def xva_inputs():
         scheduled_date = None
         if run_type in ("scheduled", "backfill"):
             scheduled_date = context["data_interval_start"].in_timezone("Europe/London").date().isoformat()
-        return ingest_inputs(run.conf or {}, Path(__file__).resolve().parents[1], scheduled_date,
+        configuration = dict(run.conf or {})
+        if scheduled_date is None and (configuration.get("generate_demo") or not any(
+                field in configuration for field in ("feeds", "input_path", "ingestion_id"))):
+            # Anchor generation to this run, even if a retry executes on a later day.
+            configuration.setdefault("valuation_date", pendulum.instance(run.run_after)
+                                     .in_timezone("Europe/London").date().isoformat())
+        return ingest_inputs(configuration, Path(__file__).resolve().parents[1], scheduled_date,
                              request_key=f"{context['dag'].dag_id}:{run.run_id}")
 
     @task

@@ -1,8 +1,9 @@
-"""Seeded variation and deliberate data-quality faults for the ingestion demo."""
+"""Synthetic portfolios, seeded variation, and deliberate data-quality faults."""
 
 import argparse
 import copy
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 import json
 import math
 from pathlib import Path
@@ -12,6 +13,11 @@ from risk_pipeline.xva.inputs import integer, number
 
 
 FAULTS = ("counterparty_code", "recovery_rate", "notional", "ma_allocation", "credit_curve", "currency")
+
+
+def current_valuation_date():
+    """Return the current London calendar date for standalone synthetic generation."""
+    return datetime.now(ZoneInfo("Europe/London")).date().isoformat()
 
 
 def generate_portfolio(valuation_date, counterparty_count=2000, trade_count=10000, seed=42,
@@ -70,7 +76,7 @@ def generate_portfolio(valuation_date, counterparty_count=2000, trade_count=1000
     return payload
 
 
-def generate_submissions(template, count=8, seed=42, noise=0.1, rejection_rate=0.25, valuation_date=None,
+def generate_submissions(template=None, count=8, seed=42, noise=0.1, rejection_rate=0.25, valuation_date=None,
                          counterparty_count=None, trade_count=None, horizon_days=365, simulation_paths=20,
                          collateral_fraction=0.7):
     """Return varied portfolio submissions with a seeded, configurable number of invalid payloads.
@@ -78,13 +84,15 @@ def generate_submissions(template, count=8, seed=42, noise=0.1, rejection_rate=0
     Bounded market/recovery variation and positive notional/threshold scaling
     keep ordinary noise valid. Explicit faults supply predictable rejections.
     Each payload is a complete alternative portfolio, not an incremental update.
+    Without an in-memory template, generate all entities programmatically;
+    templates are supported for tests and are never loaded from example files.
     """
     integer(count, "submission count", 1)
     integer(seed, "generation seed", 0)
     number(noise, "noise", 0, 0.5)
     number(rejection_rate, "rejection_rate", 0, 1)
-    if counterparty_count is not None or trade_count is not None:
-        template = generate_portfolio(valuation_date or template["valuation_date"],
+    if template is None or counterparty_count is not None or trade_count is not None:
+        template = generate_portfolio(valuation_date or (template["valuation_date"] if template else current_valuation_date()),
                                       2000 if counterparty_count is None else counterparty_count,
                                       10000 if trade_count is None else trade_count, seed,
                                       horizon_days, simulation_paths, collateral_fraction)
@@ -163,7 +171,6 @@ def write_feed_sets(payloads, root):
 def main():
     """Write generated portfolios at the requested scale as independent feeds or a legacy envelope."""
     parser = argparse.ArgumentParser(description="Generate varied XVA portfolios with intentional invalid submissions")
-    parser.add_argument("--template", default="examples/xva/inputs.json")
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--output")
     target.add_argument("--feed-directory")
@@ -178,10 +185,9 @@ def main():
     parser.add_argument("--simulation-paths", type=int, default=20)
     parser.add_argument("--collateral-fraction", type=float, default=0.7)
     args = parser.parse_args()
-    scaled = args.counterparties is not None or args.trades is not None
-    count = args.count if args.count is not None else (1 if scaled else 8)
-    rejection_rate = args.rejection_rate if args.rejection_rate is not None else (0 if scaled else 0.25)
-    payloads = generate_submissions(json.loads(Path(args.template).expanduser().read_text()), count,
+    count = args.count if args.count is not None else 1
+    rejection_rate = args.rejection_rate if args.rejection_rate is not None else 0
+    payloads = generate_submissions(None, count,
                                    args.seed, args.noise, rejection_rate, args.valuation_date,
                                    args.counterparties, args.trades, args.horizon_days,
                                    args.simulation_paths, args.collateral_fraction)
