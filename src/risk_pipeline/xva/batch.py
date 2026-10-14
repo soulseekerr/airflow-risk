@@ -113,23 +113,28 @@ def publish(snapshot_path, result_path, connection_id=DEFAULT_CONNECTION_ID):
                            VALUES (%s, %s, %s, %s, %s::jsonb, TRUE)
                            ON CONFLICT (batch_id) DO UPDATE SET is_current = TRUE""",
                            (batch_id, inputs["valuation_date"], MODEL_VERSION, inputs["reporting_currency"], json.dumps(snapshot, sort_keys=True)))
-        cursor.executemany("""INSERT INTO airflow_xva.trade_pv
-                              (valuation_date, trade_id, ma_id, counterparty_code, pv)
-                              VALUES (%s, %s, %s, %s, %s)""",
-                               [(valuation_date, r["trade_id"], r["ma_id"], r["counterparty_code"], r["pv"]) for r in results["trade_pv"]])
-        cursor.executemany("INSERT INTO airflow_xva.exposures VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                               [(valuation_date, r["ma_id"], r["date"], r["counterparty_code"], r["currency"], r["expected_positive_exposure"],
-                                 r["discount_factor"], r["survival_probability"], r["cva_increment"]) for r in results["exposures"]])
-        cursor.executemany("INSERT INTO airflow_xva.netting_set_cva VALUES (%s, %s, %s, %s, %s)",
-                               [(valuation_date, r["ma_id"], r["counterparty_code"], r["currency"], r["cva"]) for r in results["netting_set_cva"]])
-        cursor.executemany("""INSERT INTO airflow_xva.counterparty_xva
-                              (valuation_date, counterparty_code, currency, xva_type, value_calc, value_adj)
-                              VALUES (%s, %s, %s, 'CVA', %s, %s)""",
-                               [(valuation_date, r["counterparty_code"], r["currency"], r["cva"], r["cva"]) for r in results["counterparty_cva"]])
+        insert_results(cursor, valuation_date, results)
     manifest = {"batch_id": batch_id, "valuation_date": valuation_date, "status": "published", "storage": "postgres", "connection_id": connection_id,
                 "trade_count": len(results["trade_pv"]), "netting_set_count": len(results["netting_set_cva"]),
                 "total_cva": sum(r["cva"] for r in results["counterparty_cva"])}
     return write_json(Path(snapshot_path).parent / "published.json", manifest)
+
+
+def insert_results(cursor, valuation_date, results):
+    """Insert reconciled result collections within the caller's publication transaction."""
+    cursor.executemany("""INSERT INTO airflow_xva.trade_pv
+                          (valuation_date, trade_id, ma_id, counterparty_code, pv)
+                          VALUES (%s, %s, %s, %s, %s)""",
+                           [(valuation_date, r["trade_id"], r["ma_id"], r["counterparty_code"], r["pv"]) for r in results["trade_pv"]])
+    cursor.executemany("INSERT INTO airflow_xva.exposures VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                           [(valuation_date, r["ma_id"], r["date"], r["counterparty_code"], r["currency"], r["expected_positive_exposure"],
+                             r["discount_factor"], r["survival_probability"], r["cva_increment"]) for r in results["exposures"]])
+    cursor.executemany("INSERT INTO airflow_xva.netting_set_cva VALUES (%s, %s, %s, %s, %s)",
+                           [(valuation_date, r["ma_id"], r["counterparty_code"], r["currency"], r["cva"]) for r in results["netting_set_cva"]])
+    cursor.executemany("""INSERT INTO airflow_xva.counterparty_xva
+                          (valuation_date, counterparty_code, currency, xva_type, value_calc, value_adj)
+                          VALUES (%s, %s, %s, 'CVA', %s, %s)""",
+                           [(valuation_date, r["counterparty_code"], r["currency"], r["cva"], r["cva"]) for r in results["counterparty_cva"]])
 
 
 def run_batch(input_path, output_root, connection_id=DEFAULT_CONNECTION_ID):
