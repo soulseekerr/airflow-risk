@@ -3,6 +3,10 @@
 import os
 from pathlib import Path
 
+from airflow.exceptions import AirflowNotFoundException
+from airflow.models.connection import Connection
+from airflow.sdk.exceptions import AirflowNotFoundException as SDKConnectionNotFound
+
 from risk_pipeline.control_panel.airflow_api import PanelError
 from risk_pipeline.xva.batch import read_json
 from risk_pipeline.xva.postgres import DEFAULT_CONNECTION_ID, transaction
@@ -27,13 +31,17 @@ class ResultsStore:
     def query(self, sql, parameters=(), required="batches"):
         """Return named rows in a read-only transaction, treating an uninitialized schema as empty."""
         try:
-            with transaction(self.connection_id, readonly=True) as cursor:
+            # The worker SDK skips the metastore in standalone processes such as Streamlit.
+            airflow_connection = Connection.get_connection_from_secrets(self.connection_id)
+            with transaction(self.connection_id, readonly=True, airflow_connection=airflow_connection) as cursor:
                 cursor.execute("SELECT to_regclass(%s)", (f"airflow_xva.{required}",))
                 if cursor.fetchone()[0] is None:
                     return []
                 cursor.execute(sql, parameters)
                 columns = [column[0] for column in cursor.description]
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except (AirflowNotFoundException, SDKConnectionNotFound):
+            raise PanelError(f"Airflow connection '{self.connection_id}' was not found. Start Streamlit with the same AIRFLOW_HOME and metadata database configuration as Airflow, or set AIRFLOW_CONN_{self.connection_id.upper()}.") from None
         except Exception:
             raise PanelError("Results database unavailable. Check the Streamlit server's Airflow connection configuration and database read permissions.") from None
 

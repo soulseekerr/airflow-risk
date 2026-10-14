@@ -105,3 +105,61 @@ def test_empty_database_and_missing_artifacts_are_actionable(tmp_path, pg_connec
     assert panel.dates() == [] and panel.feeds("2026-10-14") == []
     with pytest.raises(PanelError, match="No current publication"):
         panel.publication("2026-10-14")
+
+
+def test_saved_airflow_connection_resolves_outside_task_context(tmp_path, pg_connection):
+    """Reproduce SDK lookup failure, then read PostgreSQL via a metadata-only saved connection."""
+    import os
+    import subprocess
+    import sys
+    from risk_pipeline.xva.postgres import ensure_schema
+
+    with transaction(pg_connection) as cursor:
+        ensure_schema(cursor)
+    home = tmp_path / "standalone-airflow"
+    home.mkdir()
+    environment = {**os.environ, "AIRFLOW_HOME": str(home), "AIRFLOW__CORE__LOAD_EXAMPLES": "False",
+                   "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN": f"sqlite:///{home}/airflow.db"}
+    environment.pop("_AIRFLOW_PROCESS_CONTEXT", None)
+    environment.pop("AIRFLOW_CONN_XVA_TEST_UI_METASTORE", None)
+    subprocess.run([sys.executable, "-m", "airflow", "db", "migrate"], env=environment, check=True,
+                   capture_output=True, timeout=60)
+    script = '''
+import os
+from airflow.models.connection import Connection
+from airflow.sdk.exceptions import AirflowNotFoundException
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.utils.session import create_session
+from risk_pipeline.control_panel.results import ResultsStore
+
+alias = "xva_test_ui_metastore"
+with create_session() as session:
+    session.add(Connection(conn_id=alias, uri=os.environ["AIRFLOW_CONN_XVA_TEST_POSTGRES"]))
+try:
+    PostgresHook(postgres_conn_id=alias).get_first("SELECT 1")
+except AirflowNotFoundException:
+    pass
+else:
+    raise AssertionError("The standalone SDK should not read the metadata-only connection")
+store = ResultsStore(alias)
+assert store.query("SELECT 1 AS probe") == [{"probe": 1}]
+assert store.dates() == []
+print("metadata-only lookup works")
+'''
+    result = subprocess.run([sys.executable, "-c", script], env=environment, check=True,
+                            capture_output=True, text=True, timeout=30)
+    assert "metadata-only lookup works" in result.stdout
+
+
+def test_missing_connection_error_identifies_configuration_without_credentials(monkeypatch):
+    """Differentiate missing connection configuration from an unreachable PostgreSQL server."""
+    from airflow.exceptions import AirflowNotFoundException
+    from risk_pipeline.control_panel import results
+
+    def missing(connection_id):
+        """Simulate Airflow not finding the requested connection in any secrets backend."""
+        raise AirflowNotFoundException("not defined")
+
+    monkeypatch.setattr(results.Connection, "get_connection_from_secrets", missing)
+    with pytest.raises(PanelError, match="Airflow connection 'risk_postgres' was not found"):
+        ResultsStore().dates()

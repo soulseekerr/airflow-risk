@@ -9,13 +9,15 @@ DEFAULT_CONNECTION_ID = "risk_postgres"
 
 
 @contextmanager
-def transaction(connection_id, readonly=False):
+def transaction(connection_id, readonly=False, *, airflow_connection=None):
     """Yield a PostgreSQL cursor, commit on success, and roll back on any exception.
 
     Close both cursor and connection; optionally enforce a repeatable-read,
-    read-only transaction for reporting.
+    read-only transaction for reporting. A standalone server can supply a
+    resolved Airflow connection instead of using the worker SDK lookup.
     """
-    with closing(PostgresHook(postgres_conn_id=connection_id).get_conn()) as connection:
+    hook_options = {"connection": airflow_connection} if airflow_connection is not None else {}
+    with closing(PostgresHook(postgres_conn_id=connection_id, **hook_options).get_conn()) as connection:
         connection.autocommit = False
         with closing(connection.cursor()) as cursor:
             try:
