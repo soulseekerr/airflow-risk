@@ -48,7 +48,7 @@ jobs:
       - name: Install project and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[ui]"
+          python -m pip install -e ".[ui,graph]"
           python -m pip install pytest pytest-cov
 
       - name: Run tests
@@ -58,3 +58,22 @@ jobs:
             --cov-report=term-missing \
             --cov-fail-under=90 \
             -v
+
+      - name: Set up Node.js for the graph demo
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/dag-viewer/package-lock.json
+
+      - name: Build graph viewer and test read-only browser interactions
+        working-directory: web/dag-viewer
+        env:
+          XVA_DEMO_PYTHON: python
+          AIRFLOW_HOME: /tmp/xva-graph-ci
+          AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+          npm run test:e2e

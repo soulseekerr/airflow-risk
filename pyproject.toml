@@ -9,6 +9,7 @@ requires-python = ">=3.10"
 
 [project.optional-dependencies]
 ui = ["streamlit>=1.50,<2", "requests>=2.32,<3"]
+graph = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
