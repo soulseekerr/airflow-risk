@@ -1,5 +1,8 @@
 # XVA control panel
 
+For the separate React Flow / FastAPI visual demo, see
+[README_GRAPH_DEMO.md](README_GRAPH_DEMO.md).
+
 A Streamlit interface for the project's Airflow **3.3.2** workflows. It launches
 and monitors work through Airflow's stable REST API (`/api/v2`) and reads published
 financial results from PostgreSQL. Calculations continue to run on Airflow workers.

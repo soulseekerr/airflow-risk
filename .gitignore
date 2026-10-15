@@ -30,3 +30,9 @@ htmlcov/
 
 # Local control-panel secrets
 .streamlit/secrets.toml
+
+# Browser graph demo build and test artifacts
+web/dag-viewer/node_modules/
+web/dag-viewer/dist/
+web/dag-viewer/playwright-report/
+web/dag-viewer/test-results/
