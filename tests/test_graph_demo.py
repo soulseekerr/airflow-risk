@@ -1,4 +1,4 @@
-"""Verify that the browser demo exposes actual DAG structure without execution controls."""
+"""Verify that the browser demo exposes actual DAG structure without allowing definition edits."""
 
 from pathlib import Path
 
@@ -31,10 +31,10 @@ def test_graph_matches_repository_task_and_cross_dag_dependencies(tmp_path):
         ("xva_calculations", "xva_reports"), ("xva_counterparty_rerun", "xva_reports")}
 
 
-def test_demo_is_get_only_and_build_instructions_are_available(tmp_path):
+def test_definitions_are_get_only_and_build_instructions_are_available(tmp_path):
     """Reject mutations and provide startup guidance without an installed frontend bundle."""
     client = TestClient(create_app(REPOSITORY, tmp_path / "unbuilt"))
-    assert client.get("/api/health").json() == {"status": "ok", "read_only": True}
+    assert client.get("/api/health").json() == {"status": "ok", "definitions_read_only": True, "execution_enabled": True}
     assert "npm run build" in client.get("/").json()["message"]
     for method in ("post", "put", "patch", "delete"):
         assert client.request(method.upper(), "/api/graph", json={"nodes": []}).status_code == 405

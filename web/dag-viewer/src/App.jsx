@@ -35,6 +35,14 @@ import {
   X,
 } from "lucide-react";
 import { overviewGraph, taskGraph, taskLabel } from "./graph";
+import {
+  useExecution,
+  ExecutionBar,
+  LaunchDialog,
+  TaskExecution,
+  Status,
+  decorateNode,
+} from "./execution";
 
 const accentFor = (id) =>
   id.includes("report")
@@ -69,13 +77,17 @@ function Pins({ orientation }) {
 function WorkflowNode({ data, selected }) {
   return (
     <div
-      className={`graph-card workflow-card accent-${accentFor(data.id)} ${selected ? "is-selected" : ""}`}
+      className={`graph-card workflow-card ${data.runtime ? `runtime-${data.runtime.state}` : ""} accent-${accentFor(data.id)} ${selected ? "is-selected" : ""}`}
     >
       <Pins orientation="LR" />
       <div className="node-heading">
         <Workflow size={15} />
         <span>AIRFLOW DAG</span>
-        <span className="node-count">{data.tasks.length} tasks</span>
+        {data.runtime ? (
+          <Status state={data.runtime.state} />
+        ) : (
+          <span className="node-count">{data.tasks.length} tasks</span>
+        )}
       </div>
       <div className="node-content">
         <h3>{data.label}</h3>
@@ -96,7 +108,7 @@ function TaskNode({ data, selected }) {
   const trigger = data.kind === "trigger";
   return (
     <div
-      className={`graph-card task-card ${trigger ? "accent-amber" : "accent-blue"} ${selected ? "is-selected" : ""}`}
+      className={`graph-card task-card ${data.runtime ? `runtime-${data.runtime.state}` : ""} ${trigger ? "accent-amber" : "accent-blue"} ${selected ? "is-selected" : ""}`}
     >
       <Pins orientation={data.orientation} />
       <div className="node-heading">
@@ -108,7 +120,11 @@ function TaskNode({ data, selected }) {
               ? "PYTHON TASK"
               : "TASK"}
         </span>
-        <span className="definition-dot" />
+        {data.runtime ? (
+          <Status state={data.runtime.state} />
+        ) : (
+          <span className="definition-dot" />
+        )}
       </div>
       <div className="node-content">
         <h3>{data.label}</h3>
@@ -139,7 +155,15 @@ function DetailRow({ label, children }) {
   );
 }
 
-function Inspector({ selected, dag, catalog, openDag, selectTask, close }) {
+function Inspector({
+  selected,
+  dag,
+  catalog,
+  openDag,
+  selectTask,
+  close,
+  execution,
+}) {
   const entity = selected?.data;
   const isTask = selected?.type === "task";
   const context = isTask ? dag : entity;
@@ -176,8 +200,8 @@ function Inspector({ selected, dag, catalog, openDag, selectTask, close }) {
           <div className="inspector-tip">
             <Eye size={16} />
             <span>
-              This canvas shows definitions from your project. Execution status
-              is not loaded.
+              Choose an execution workflow and run to overlay live status. DAG
+              definitions are maintained in Python.
             </span>
           </div>
         </div>
@@ -195,6 +219,25 @@ function Inspector({ selected, dag, catalog, openDag, selectTask, close }) {
             <h2>{entity.label}</h2>
             <code>{entity.id}</code>
           </div>
+          {entity.runtime &&
+            (isTask ? (
+              <TaskExecution
+                key={`${entity.id}:${entity.runtime.stage?.dag_run_id}:${entity.runtime.instances.map((item) => `${item.map_index}-${item.try_number}-${item.state}`).join(",")}`}
+                runtime={entity.runtime}
+                taskId={entity.id}
+                refresh={execution.refresh}
+              />
+            ) : (
+              <div className="inspector-section">
+                <h4>EXECUTION</h4>
+                <Status state={entity.runtime.state} />
+                {entity.runtime.stage?.dag_run_id && (
+                  <code className="runtime-run">
+                    {entity.runtime.stage.dag_run_id}
+                  </code>
+                )}
+              </div>
+            ))}
           <div className="inspector-section">
             <h4>PROPERTIES</h4>
             <DetailRow label="Type">
@@ -311,7 +354,7 @@ function Inspector({ selected, dag, catalog, openDag, selectTask, close }) {
       )}
       <div className="inspector-bottom">
         <LockKeyhole size={13} />
-        <span>Definitions only · read mode</span>
+        <span>DAG definitions maintained in code</span>
       </div>
     </aside>
   );
@@ -325,6 +368,7 @@ function Canvas({
   onSelect,
   openDag,
   inspectorOpen,
+  execution,
 }) {
   const dag = catalog.dags.find((item) => item.id === activeDag);
   const layout = useMemo(
@@ -335,10 +379,10 @@ function Canvas({
   const nodes = useMemo(
     () =>
       layout.nodes.map((node) => ({
-        ...node,
+        ...decorateNode(node, execution.stages, !!execution.runId),
         selected: node.id === selectedId,
       })),
-    [layout.nodes, selectedId],
+    [layout.nodes, selectedId, execution.stages, execution.runId],
   );
   useEffect(() => {
     const timeout = setTimeout(
@@ -435,6 +479,8 @@ function Canvas({
 }
 
 function Studio({ catalog, reload, loading }) {
+  const execution = useExecution();
+  const [launchOpen, setLaunchOpen] = useState(false);
   const [activeDag, setActiveDag] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [orientation, setOrientation] = useState("TB");
@@ -445,7 +491,15 @@ function Studio({ catalog, reload, loading }) {
     () => (dag ? taskGraph(dag, orientation) : overviewGraph(catalog)),
     [catalog, dag, orientation],
   );
-  const selected = layout.nodes.find((node) => node.id === selectedId);
+  const rawSelected = layout.nodes.find((node) => node.id === selectedId);
+  const selected = rawSelected
+    ? decorateNode(rawSelected, execution.stages, !!execution.runId)
+    : null;
+  const stage = execution.stages?.find((item) => item.dag_id === activeDag);
+  const missingTasks =
+    stage?.tasks.filter(
+      (task) => !dag?.tasks.some((item) => item.id === task.task_id),
+    ) || [];
   const filtered = catalog.dags.filter((item) =>
     `${item.label} ${item.id}`.toLowerCase().includes(query.toLowerCase()),
   );
@@ -483,7 +537,7 @@ function Studio({ catalog, reload, loading }) {
           </span>
           <span className="read-mode">
             <LockKeyhole size={13} />
-            Read-only preview
+            Code-defined DAGs
           </span>
           <a
             className="github-link"
@@ -560,10 +614,10 @@ function Studio({ catalog, reload, loading }) {
             <div className="sidebar-note">
               <Eye size={17} />
               <div>
-                <strong>Explore, without changing.</strong>
+                <strong>Explore and execute.</strong>
                 <p>
-                  Pan, zoom and inspect the tasks and connections in your
-                  project.
+                  Inspect definitions, follow executions and retry failed tasks.
+                  DAG changes stay in code.
                 </p>
               </div>
             </div>
@@ -622,31 +676,44 @@ function Studio({ catalog, reload, loading }) {
               )}
             </div>
           </div>
-          <div className="canvas-title">
-            <div>
-              <span className="eyebrow">
-                {dag ? "TASK GRAPH" : "PROJECT OVERVIEW"}
+          <ExecutionBar
+            catalog={catalog}
+            execution={execution}
+            launch={() => setLaunchOpen(true)}
+          />
+          <div className="canvas-title-wrap">
+            <div className="canvas-title">
+              <div>
+                <span className="eyebrow">
+                  {dag ? "TASK GRAPH" : "PROJECT OVERVIEW"}
+                </span>
+                <h1>{dag ? dag.label : "The shape of your workflows."}</h1>
+                <p>
+                  {dag ? (
+                    <>
+                      <code>{dag.id}</code>
+                      <span className="title-divider">/</span>
+                      {dag.schedule === "Triggered"
+                        ? "Triggered workflow"
+                        : dag.schedule}
+                    </>
+                  ) : (
+                    "Your Airflow DAGs, connected. Select a workflow to look inside."
+                  )}
+                </p>
+              </div>
+              <span className="definition-badge">
+                <CircleDot size={13} />
+                {execution.runId ? "Execution view" : "Definition view"}
               </span>
-              <h1>{dag ? dag.label : "The shape of your workflows."}</h1>
-              <p>
-                {dag ? (
-                  <>
-                    <code>{dag.id}</code>
-                    <span className="title-divider">/</span>
-                    {dag.schedule === "Triggered"
-                      ? "Triggered workflow"
-                      : dag.schedule}
-                  </>
-                ) : (
-                  "Your Airflow DAGs, connected. Select a workflow to look inside."
-                )}
-              </p>
             </div>
-            <span className="definition-badge">
-              <CircleDot size={13} />
-              Definition view
-            </span>
           </div>
+          {missingTasks.length > 0 && (
+            <p className="execution-error">
+              {missingTasks.length} task instances from this run are absent from
+              the current definition. View the original DAG version in Airflow.
+            </p>
+          )}
           <div className="graph-canvas" data-testid="graph-canvas">
             <Canvas
               catalog={catalog}
@@ -656,12 +723,13 @@ function Studio({ catalog, reload, loading }) {
               onSelect={selectNode}
               openDag={openDag}
               inspectorOpen={inspectorOpen}
+              execution={execution}
             />
           </div>
           <footer className="canvas-footer">
             <span>
               <Eye size={12} />
-              READ MODE
+              {execution.runId ? "EXECUTION MONITOR" : "DEFINITION VIEW"}
             </span>
             <span>
               Drag canvas to pan <b>·</b> Scroll to zoom <b>·</b> Select a node
@@ -680,10 +748,19 @@ function Studio({ catalog, reload, loading }) {
             catalog={catalog}
             openDag={openDag}
             selectTask={setSelectedId}
+            execution={execution}
             close={() => setInspectorOpen(false)}
           />
         )}
       </div>
+      {launchOpen && (
+        <LaunchDialog
+          catalog={catalog}
+          initialDag={activeDag || execution.workflow}
+          close={() => setLaunchOpen(false)}
+          launched={execution.launched}
+        />
+      )}
     </div>
   );
 }

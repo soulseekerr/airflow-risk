@@ -1,4 +1,4 @@
-"""Expose DAG definitions to a read-only browser canvas without running tasks."""
+"""Expose code-defined DAGs and explicit Airflow execution controls to the browser."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +8,10 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+
+from risk_pipeline.control_panel.airflow_api import PanelError
+from risk_pipeline.graph_demo.execution import install_execution
 
 
 TITLES = {
@@ -57,22 +61,34 @@ def read_graph(repository):
             "loaded_at": datetime.now(timezone.utc).isoformat(), "dags": dags, "links": links}
 
 
-def create_app(repository=None, frontend=None):
-    """Create a GET-only API and optionally serve the built React application from the same origin."""
+def create_app(repository=None, frontend=None, api_factory=None):
+    """Serve immutable definitions and explicit execution controls from the same origin."""
     root = Path(repository or os.getenv("XVA_PROJECT_ROOT", Path(__file__).resolve().parents[3])).resolve()
     assets = Path(frontend or root / "web/dag-viewer/dist")
     app = FastAPI(title="XVA DAG viewer", docs_url=None, redoc_url=None, openapi_url=None)
 
+    catalog = {}
+
+    @app.exception_handler(PanelError)
+    async def operational_error(request, error):
+        """Return only sanitized operational messages from the Airflow client."""
+        return JSONResponse(status_code=error.status or 400, content={"detail": str(error)})
+
+    install_execution(app, lambda: catalog, api_factory)
+
     @app.get("/api/health")
     def health():
         """Report that the viewer backend is running without contacting Airflow or PostgreSQL."""
-        return {"status": "ok", "read_only": True}
+        return {"status": "ok", "definitions_read_only": True, "execution_enabled": True}
 
     @app.get("/api/graph")
     async def graph():
         """Return the actual repository graph or an actionable installation error."""
         try:
-            return read_graph(root)
+            result = read_graph(root)
+            catalog.clear()
+            catalog.update(result)
+            return result
         except Exception:
             logging.getLogger(__name__).exception("Could not load local DAG definitions")
             raise HTTPException(503, "DAG definitions could not be loaded. Check the Airflow installation and DAG import errors.") from None

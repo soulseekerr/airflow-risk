@@ -28,32 +28,33 @@ class PanelError(Exception):
 class AirflowAPI:
     """Authenticate on the server and perform bounded, explicitly scoped workflow requests."""
 
-    def __init__(self, url, token=None, username=None, password=None, session=None):
-        """Accept server configuration, with a reusable session for one browser session."""
+    def __init__(self, url, token=None, username=None, password=None, session=None, allowed_dags=None):
+        """Accept server configuration and an optional trusted catalog scope."""
         parsed = urlsplit(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise PanelError("XVA_AIRFLOW_URL must be an HTTP(S) server URL without credentials, query, or fragment.")
+        self.allowed_dags = frozenset(WORKFLOWS if allowed_dags is None else allowed_dags)
         self.url = url.rstrip("/")
         self.token, self.username, self.password = token, username, password
         self.session = session or requests.Session()
 
     @classmethod
-    def from_environment(cls):
-        """Read API credentials from the Streamlit server environment, never browser controls."""
+    def from_environment(cls, allowed_dags=None):
+        """Read API credentials from the application server environment, never browser controls."""
         return cls(os.getenv("XVA_AIRFLOW_URL", "http://localhost:8080"), os.getenv("XVA_AIRFLOW_TOKEN"),
-                   os.getenv("XVA_AIRFLOW_USERNAME"), os.getenv("XVA_AIRFLOW_PASSWORD"))
+                   os.getenv("XVA_AIRFLOW_USERNAME"), os.getenv("XVA_AIRFLOW_PASSWORD"), allowed_dags=allowed_dags)
 
     def _send(self, method, path, **kwargs):
         """Make one timed request without following redirects that could disclose a bearer token."""
         try:
             return self.session.request(method, self.url + path, timeout=(5, 30), allow_redirects=False, **kwargs)
         except requests.RequestException:
-            raise PanelError("Airflow could not be reached. Check the API URL and server. If a launch timed out, submit the same form again to recover its run.") from None
+            raise PanelError("Airflow could not be reached. Check the API URL and server. If a launch timed out, submit the same form again to recover its run.", 503) from None
 
     def _login(self):
         """Obtain a short-lived JWT using Airflow's configured auth manager."""
         if not self.username or not self.password:
-            raise PanelError("Configure XVA_AIRFLOW_TOKEN or XVA_AIRFLOW_USERNAME and XVA_AIRFLOW_PASSWORD on the Streamlit server.")
+            raise PanelError("Configure XVA_AIRFLOW_TOKEN or XVA_AIRFLOW_USERNAME and XVA_AIRFLOW_PASSWORD on the application server.")
         response = self._send("POST", "/auth/token", json={"username": self.username, "password": self.password})
         if not 200 <= response.status_code < 300:
             raise PanelError("Airflow authentication failed. Check the server-side credentials and auth manager.", response.status_code)
@@ -87,8 +88,8 @@ class AirflowAPI:
             raise PanelError("Airflow returned an invalid JSON response.") from None
 
     def _dag_path(self, dag_id):
-        """Limit write-capable controls to this project's known XVA workflows."""
-        if dag_id not in WORKFLOWS:
+        """Limit operations to the explicitly configured workflow scope."""
+        if dag_id not in self.allowed_dags:
             raise PanelError("Unknown XVA workflow.")
         return "/dags/" + quote(dag_id, safe="")
 
@@ -116,7 +117,7 @@ class AirflowAPI:
     def trigger(self, dag_id, configuration, run_id):
         """Start a workflow with a stable request ID and recover an already accepted identical request."""
         if self.dag(dag_id).get("is_paused"):
-            raise PanelError(f"{WORKFLOWS[dag_id]} is paused. Enable it in Workflow controls first.")
+            raise PanelError(f"{WORKFLOWS.get(dag_id, dag_id)} is paused. Enable it in Workflow controls first.")
         try:
             return self.request("POST", self._dag_path(dag_id) + "/dagRuns",
                                 json={"dag_run_id": run_id, "logical_date": None, "conf": configuration})

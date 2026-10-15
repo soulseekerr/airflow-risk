@@ -6,8 +6,9 @@ See [README_PROJECT.md](README_PROJECT.md) for the original demo overview and
 Use the [Streamlit control panel](README_UI.md) to launch batches, monitor linked
 workflows, inspect CVA results, and submit counterparty corrections.
 
-The [React Flow DAG explorer demo](README_GRAPH_DEMO.md) provides an
-ImNodes-inspired, read-only view of the DAGs and task connections.
+The [React Flow DAG explorer](README_GRAPH_DEMO.md) provides an
+ImNodes-inspired view of DAGs and task connections, with workflow launches,
+live execution states, task logs and failed-task retries. DAGs are maintained in code.
 
 ```
 airflow-risk-demo/

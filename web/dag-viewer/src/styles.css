@@ -1233,3 +1233,244 @@ input {
     font-size: 9px;
   }
 }
+
+/* Execution controls stay outside the graph, preserving its layout during polling. */
+.canvas-title-wrap {
+  position: relative;
+  min-height: 110px;
+}
+.canvas-title-wrap .canvas-title {
+  top: 24px;
+}
+.main-workspace .graph-canvas {
+  padding-top: 0;
+}
+.execution-panel {
+  border-bottom: 1px solid var(--border);
+  background: #191e26;
+  padding: 10px 16px;
+}
+.execution-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.execution-controls .eyebrow {
+  font-size: 9px;
+  color: #8591a5;
+}
+.execution-controls select {
+  max-width: 240px;
+  min-width: 100px;
+  flex: 1;
+}
+.execution-panel select,
+.launch-dialog select,
+.runtime-details select {
+  background: #11161e;
+  color: #c5d1e1;
+  border: 1px solid #394657;
+  border-radius: 4px;
+  padding: 7px;
+  font: inherit;
+  font-size: 11px;
+}
+.execute-button,
+.retry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #4b6e94;
+  background: #273e58;
+  color: #d7e8fd;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.execution-controls .execute-button {
+  margin-left: auto;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.execution-note {
+  margin: 8px 0 0;
+  color: #8290a3;
+  font-size: 10px;
+}
+.execution-error {
+  color: #f0a7a7;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.run-status {
+  color: #96a2b2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 9px var(--mono);
+  white-space: nowrap;
+}
+.run-status i {
+  width: 5px;
+  height: 5px;
+  background: currentColor;
+  border-radius: 50%;
+}
+.node-heading .run-status {
+  margin-left: auto;
+  font-size: 8px;
+  letter-spacing: 0;
+}
+.state-success {
+  color: #78c9a3;
+}
+.state-failed,
+.state-upstream_failed {
+  color: #ef9097;
+}
+.state-running {
+  color: #81bbff;
+}
+.state-queued,
+.state-scheduled,
+.state-up_for_retry,
+.state-waiting {
+  color: #dfba79;
+}
+.state-outside_execution,
+.state-not_in_run,
+.state-unavailable {
+  color: #78818f;
+}
+.runtime-success {
+  border-color: #477d68;
+}
+.runtime-failed,
+.runtime-upstream_failed {
+  border-color: #ad606b;
+}
+.runtime-running {
+  border-color: #5a99db;
+  box-shadow: 0 0 16px #427fbe20;
+}
+.runtime-outside_execution,
+.runtime-not_in_run {
+  opacity: 0.5;
+}
+.runtime-run {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 9px;
+  margin: 12px 0;
+  color: #a2b6d0;
+}
+.runtime-details label {
+  display: grid;
+  gap: 7px;
+  font-size: 10px;
+  margin: 12px 0;
+}
+.log-actions {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+.task-logs {
+  margin: 12px 0 0;
+  padding: 10px;
+  background: #0e131a;
+  border: 1px solid #303b4b;
+  max-height: 350px;
+  overflow: auto;
+  font: 10px/1.6 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #b5c4d8;
+}
+.retry-button {
+  background: #453125;
+  border-color: #94704c;
+  color: #f0c48d;
+  margin: 8px 0;
+}
+.retry-confirm {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #c6b5a0;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: #080c13bb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+.launch-dialog {
+  background: #1b222d;
+  border: 1px solid #46556a;
+  border-radius: 9px;
+  width: 600px;
+  max-height: 95vh;
+  overflow: auto;
+  padding: 24px;
+  box-shadow: 0 20px 100px #0009;
+}
+.dialog-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dialog-heading h2 {
+  margin: 0;
+  font-size: 20px;
+}
+.launch-dialog p {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #9caabc;
+}
+.launch-dialog label {
+  display: grid;
+  gap: 8px;
+  margin: 20px 0;
+  font-size: 11px;
+  color: #bac6d6;
+}
+.launch-dialog textarea {
+  min-height: 220px;
+  resize: vertical;
+  padding: 14px;
+  background: #10161f;
+  border: 1px solid #3f5066;
+  color: #c7def8;
+  border-radius: 5px;
+  font: 12px/1.7 var(--mono);
+}
+.launch-dialog .execution-error {
+  color: #f0a7a7;
+}
+@media (max-width: 1000px) {
+  .execution-controls {
+    gap: 6px;
+  }
+  .execution-controls .eyebrow {
+    display: none;
+  }
+  .execution-controls select {
+    max-width: 170px;
+  }
+}
+
+.graph-canvas .fit-button {
+  top: 12px;
+}

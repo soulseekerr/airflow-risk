@@ -149,3 +149,17 @@ def test_unsafe_configuration_rejected(url):
     """Exclude credentials from configured URLs and allow only the supported HTTP transport."""
     with pytest.raises(PanelError):
         AirflowAPI(url)
+
+
+def test_graph_scope_can_include_local_utility_dags_without_expanding_streamlit_controls():
+    """Keep Streamlit's default scope while allowing a trusted graph catalog to supply its own."""
+    api, adapter = client([], token="secret")
+    with pytest.raises(PanelError, match="Unknown"):
+        api.dag("xcom_demo")
+    assert not adapter.calls
+    api, adapter = client([(200, {"is_paused": True})], token="secret", allowed_dags={"xcom_demo"})
+    with pytest.raises(PanelError, match="xcom_demo is paused"):
+        api.trigger("xcom_demo", {}, "one")
+    assert len(adapter.calls) == 1
+    with pytest.raises(PanelError, match="Unknown"):
+        api.dag("xva_inputs")

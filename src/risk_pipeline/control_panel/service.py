@@ -45,36 +45,41 @@ class PanelServices:
 
     def execution(self, dag_id, run_id):
         """Follow frozen handoffs to exact child runs, including children outside recent-run windows."""
-        stages = []
-        while True:
-            try:
-                run = self.api.run(dag_id, run_id)
-            except PanelError as error:
-                if error.status != 404 or not stages:
-                    raise
-                stages.append({"dag_id": dag_id, "dag_run_id": run_id, "state": "waiting", "tasks": []})
-                break
-            tasks = self.api.tasks(dag_id, run_id)
-            stages.append({**run, "dag_id": dag_id, "dag_run_id": run_id, "tasks": tasks})
-            if dag_id not in HANDOFFS:
-                break
-            task_id, child_dag, field, prefix = HANDOFFS[dag_id]
-            completed = any(task["task_id"] == task_id and task.get("state") == "success" for task in tasks)
-            if not completed:
-                stages.append({"dag_id": child_dag, "dag_run_id": None, "state": "waiting", "tasks": []})
-                break
-            try:
-                handoff = self.api.xcom(dag_id, run_id, task_id)
-            except PanelError as error:
-                if error.status != 404:
-                    raise
-                stages.append({"dag_id": child_dag, "dag_run_id": None, "state": "waiting", "tasks": []})
-                break
-            identifier = handoff.get(field)
-            if not isinstance(identifier, str) or not identifier:
-                raise PanelError("A completed workflow has an incomplete downstream handoff.")
-            dag_id, run_id = child_dag, prefix + identifier
-        return stages
+        return read_execution(self.api, dag_id, run_id)
+
+
+def read_execution(api, dag_id, run_id):
+    """Follow exact frozen run handoffs for both browser control panels."""
+    stages = []
+    while True:
+        try:
+            run = api.run(dag_id, run_id)
+        except PanelError as error:
+            if error.status != 404 or not stages:
+                raise
+            stages.append({"dag_id": dag_id, "dag_run_id": run_id, "state": "waiting", "tasks": []})
+            break
+        tasks = api.tasks(dag_id, run_id)
+        stages.append({**run, "dag_id": dag_id, "dag_run_id": run_id, "tasks": tasks})
+        if dag_id not in HANDOFFS:
+            break
+        task_id, child_dag, field, prefix = HANDOFFS[dag_id]
+        completed = any(task["task_id"] == task_id and task.get("state") == "success" for task in tasks)
+        if not completed:
+            stages.append({"dag_id": child_dag, "dag_run_id": None, "state": "waiting", "tasks": []})
+            break
+        try:
+            handoff = api.xcom(dag_id, run_id, task_id)
+        except PanelError as error:
+            if error.status != 404:
+                raise
+            stages.append({"dag_id": child_dag, "dag_run_id": None, "state": "waiting", "tasks": []})
+            break
+        identifier = handoff.get(field)
+        if not isinstance(identifier, str) or not identifier:
+            raise PanelError("A completed workflow has an incomplete downstream handoff.")
+        dag_id, run_id = child_dag, prefix + identifier
+    return stages
 
 
 def execution_state(stages):
